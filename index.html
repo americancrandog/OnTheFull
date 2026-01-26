@@ -555,9 +555,7 @@ function drawPlayerPortrait(p, destX, destY, size) {
   px(14, 28, 2, 6, skin.shadow);
   px(22, 29, 2, 4, skin.highlight);
   
-  // V-neck
-  px(15, 33, 8, 2, teamColors.dark);
-  px(16, 34, 6, 2, skin.shadow);
+  // v114: remove the neck "U" artifact (no V-neck pixels)
   
   // === FACE DIMENSIONS ===
   const faceL = 7;
@@ -974,6 +972,7 @@ let messageTimer = 0;
 let kickoffLockFrames = START_UNTACKLE_FRAMES;
 // v102: separate kick-in grace (behind/on-the-full) from centre-bounce safety lock
 let kickInGraceFrames = 0;
+let kickInPlayOnBoostFrames = 0; // v116: brief aggression after grace ends
 
 // After a score, pause briefly before resetting to centre
 let pendingReset = null; // { type, teamToStart }
@@ -1005,16 +1004,289 @@ let nextQuarter = 2;
 // Input (edge detection)
 const keys = {};
 const justPressed = {};
-window.addEventListener('keydown', e => {
-  if (e.code === 'Escape'){
-    isPaused = !isPaused;
-    // Prevent "stuck keys" when resuming
-    if (isPaused){
-      keys['ArrowUp'] = false; keys['ArrowDown'] = false; keys['ArrowLeft'] = false; keys['ArrowRight'] = false;
-      keys['Space'] = false; keys['KeyX'] = false;
-      justPressed['ArrowUp'] = false; justPressed['ArrowDown'] = false; justPressed['ArrowLeft'] = false; justPressed['ArrowRight'] = false;
-      justPressed['Space'] = false; justPressed['KeyX'] = false;
+
+// ===================
+// MENU / UI SCREENS (v113)
+// ===================
+const UI_SCREEN = {
+  MAIN_MENU: 'main_menu',
+  STATS_TEAM: 'stats_team',
+  STATS_ROSTER: 'stats_roster',
+  PAUSE_MENU: 'pause_menu',
+  FORMATION_MENU: 'formation_menu',
+  GAME: 'game'
+};
+let uiScreen = UI_SCREEN.MAIN_MENU;
+let menuIndex = 0; // 0=PLAY GAME, 1=PLAYER STATS
+let teamMenuIndex = 0; // 0=GW Sloths, 1=Darwin Dropbears
+let rosterIndex = 0;
+let rosterScroll = 0;
+
+// ===================
+// FORMATIONS (v115)
+// ===================
+const FORMATION = {
+  BALANCED: 'balanced',
+  OFFENSIVE: 'offensive',
+  DEFENSIVE: 'defensive'
+};
+const FORMATION_LABEL = {
+  [FORMATION.BALANCED]: 'BALANCED FOCUS',
+  [FORMATION.OFFENSIVE]: 'OFFENSIVE FOCUS',
+  [FORMATION.DEFENSIVE]: 'DEFENSIVE FOCUS'
+};
+let slothsFormation = FORMATION.BALANCED;
+let dropbearsFormation = FORMATION.BALANCED;
+
+let pauseMenuIndex = 0;      // 0=RESUME, 1=CHANGE FORMATION
+let formationMenuIndex = 0;  // cursor in formation menu (0..2)
+
+function teamPoints(team){
+  const t = score?.[team];
+  if (!t) return 0;
+  return (t.g * 6) + t.b;
+}
+
+function computeDropbearsAutoFormation(){
+  const diff = teamPoints('dropbears') - teamPoints('sloths');
+  if (diff >= 12) return FORMATION.DEFENSIVE;
+  if (diff <= -12) return FORMATION.OFFENSIVE;
+  return FORMATION.BALANCED;
+}
+
+function formationListIndex(f){
+  if (f === FORMATION.BALANCED) return 0;
+  if (f === FORMATION.OFFENSIVE) return 1;
+  return 2;
+}
+
+function formationByIndex(i){
+  if (i === 0) return FORMATION.BALANCED;
+  if (i === 1) return FORMATION.OFFENSIVE;
+  return FORMATION.DEFENSIVE;
+}
+
+function applyFormationToTeam(team, formation, snapPositions){
+  // Adjust each player's home position (and optionally snap current position) by roleIndex.
+  const attackDir = getAttackDir(team);
+  for (const p of allPlayers){
+    if (p.team !== team) continue;
+    const baseRx = Number.isFinite(p.baseRx) ? p.baseRx : 0;
+    const baseRy = Number.isFinite(p.baseRy) ? p.baseRy : 0;
+    const idx = p.roleIndex ?? 0;
+
+    let rx = baseRx;
+    let ry = baseRy;
+
+    if (formation === FORMATION.OFFENSIVE){
+      if (idx <= 2) rx = Math.min(baseRx + 240, -560);                 // back pocket / FB push up
+      else if (idx <= 5) rx = Math.min(baseRx + 240, -320);            // half-back push up
+      else if (idx <= 7) rx = Math.min(baseRx + 160, -60);             // wings push up
+      else if (idx === 8) rx = Math.min(baseRx + 120, -40);            // centre slightly forward
+      else if (idx <= 11) rx = baseRx + 80;                            // half-forwards push on
+      else if (idx <= 14) rx = baseRx + 120;                           // deep forwards push on
+      else rx = baseRx + 60;                                           // rucks a touch forward
+    } else if (formation === FORMATION.DEFENSIVE){
+      if (idx <= 2) rx = Math.max(baseRx - 120, -1050);                // deeper back pocket / FB
+      else if (idx <= 5) rx = baseRx - 120;                            // deeper half-back
+      else if (idx <= 7) rx = baseRx - 200;                            // wings fall back
+      else if (idx === 8) rx = baseRx - 200;                           // centre falls back
+      else if (idx <= 11) rx = baseRx - 240;                           // half-forwards fall to centre/behind ball
+      else if (idx <= 14) rx = baseRx - 360;                           // deep forwards fall back
+      else rx = baseRx - 80;                                           // rucks slightly back
+    } else {
+      // Balanced: use base AFL-ish template (no change)
     }
+
+    const hx = OVAL_CX + rx * attackDir;
+    const hy = OVAL_CY + ry;
+    p.homeX = hx; p.homeY = hy;
+    p.roamTimer = 0;
+    p.roamX = hx; p.roamY = hy;
+    if (snapPositions){
+      p.x = hx; p.y = hy;
+    }
+  }
+}
+
+const TEAM_DISPLAY = {
+  sloths: 'GW Sloths',
+  dropbears: 'Darwin Dropbears'
+};
+const TEAM_BY_MENU_INDEX = ['sloths', 'dropbears'];
+
+// AFL-ish position names matching buildTeam() role order (18 per team)
+const POSITION_NAMES_18 = [
+  'Left Back Pocket', 'Full Back', 'Right Back Pocket',
+  'Left Half Back Flank', 'Centre Half Back', 'Right Half Back Flank',
+  'Left Wing', 'Right Wing', 'Centre',
+  'Left Half Forward Flank', 'Centre Half Forward', 'Right Half Forward Flank',
+  'Left Forward Pocket', 'Full Forward', 'Right Forward Pocket',
+  'Ruck', 'Rover', 'Ruck Rover'
+];
+
+// Easy to extend later: just add more entries here.
+const STATS_META = [
+  { key: 'SPEED', label: 'Speed', abbr: 'SPD' },
+  { key: 'TACKLE', label: 'Tackle', abbr: 'TKL' },
+  { key: 'MARKING', label: 'Marking', abbr: 'MRK' },
+  { key: 'GOAL_KICK', label: 'Goal Kick', abbr: 'GK' },
+  { key: 'LONG_KICK', label: 'Long Kick', abbr: 'LK' },
+  { key: 'HANDPASS', label: 'Handpass', abbr: 'HND' }
+];
+
+function getRosterForTeam(team){
+  return allPlayers
+    .filter(p => p.team === team)
+    .slice()
+    .sort((a,b)=>(a.roleIndex ?? 0) - (b.roleIndex ?? 0));
+}
+
+function ensureRosterCursorInRange(){
+  const roster = getRosterForTeam(TEAM_BY_MENU_INDEX[teamMenuIndex]);
+  const n = roster.length || 1;
+  rosterIndex = ((rosterIndex % n) + n) % n;
+  const visibleRows = 12;
+  if (rosterIndex < rosterScroll) rosterScroll = rosterIndex;
+  if (rosterIndex >= rosterScroll + visibleRows) rosterScroll = rosterIndex - visibleRows + 1;
+  rosterScroll = Math.max(0, Math.min(rosterScroll, Math.max(0, n - visibleRows)));
+}
+
+function startNewGameFromMenu(){
+  // Reset match basics (safe even if you were previously playing).
+  score.sloths.g = 0; score.sloths.b = 0;
+  score.dropbears.g = 0; score.dropbears.b = 0;
+  quarter = 1;
+  quarterTime = QUARTER_LENGTH_GAME_SECS;
+  nextQuarter = 2;
+  slothsAttackDir = -1;
+  gameState = 'playing';
+  isPaused = false;
+  pendingReset = null;
+  scorePauseFrames = 0;
+  umpireDisplayFrames = 0;
+  umpireSignalType = null;
+  umpireSoundPlayed = false;
+  messageTimer = 0;
+
+  resetPositionsStart();
+  uiScreen = UI_SCREEN.GAME;
+  // Opening centre-bounce whistle (allowed because user pressed Enter on PLAY GAME).
+  playSound('quarterstart');
+}
+
+window.addEventListener('keydown', e => {
+  // v113: menu navigation (blocks gameplay input until PLAY GAME)
+  if (uiScreen !== UI_SCREEN.GAME){
+    const code = e.code;
+    if (['ArrowUp','ArrowDown','Enter','Escape','Space'].includes(code)) e.preventDefault();
+
+    if (uiScreen === UI_SCREEN.MAIN_MENU){
+      if (code === 'ArrowUp' || code === 'ArrowDown'){
+        menuIndex = (menuIndex === 0) ? 1 : 0;
+        playSound('chip');
+      } else if (code === 'Enter'){
+        if (menuIndex === 0){
+          startNewGameFromMenu();
+        } else {
+          uiScreen = UI_SCREEN.STATS_TEAM;
+          teamMenuIndex = 0;
+          rosterIndex = 0;
+          rosterScroll = 0;
+          playSound('chip');
+        }
+      }
+      return;
+    }
+
+    if (uiScreen === UI_SCREEN.PAUSE_MENU){
+      if (code === 'ArrowUp' || code === 'ArrowDown'){
+        pauseMenuIndex = (pauseMenuIndex === 0) ? 1 : 0;
+        playSound('chip');
+      } else if (code === 'Enter'){
+        if (pauseMenuIndex === 0){
+          // Resume
+          uiScreen = UI_SCREEN.GAME;
+          isPaused = false;
+          playSound('chip');
+        } else {
+          // Change formation
+          uiScreen = UI_SCREEN.FORMATION_MENU;
+          formationMenuIndex = formationListIndex(slothsFormation);
+          playSound('chip');
+        }
+      } else if (code === 'Escape'){
+        // ESC behaves like resume from pause menu
+        uiScreen = UI_SCREEN.GAME;
+        isPaused = false;
+        playSound('chip');
+      }
+      return;
+    }
+
+    if (uiScreen === UI_SCREEN.FORMATION_MENU){
+      if (code === 'ArrowUp'){
+        formationMenuIndex = (formationMenuIndex + 2) % 3;
+        playSound('chip');
+      } else if (code === 'ArrowDown'){
+        formationMenuIndex = (formationMenuIndex + 1) % 3;
+        playSound('chip');
+      } else if (code === 'Enter'){
+        slothsFormation = formationByIndex(formationMenuIndex);
+        // Apply immediately (no teleport; just update shape targets).
+        applyFormationToTeam('sloths', slothsFormation, false);
+        playSound('chip');
+      } else if (code === 'Escape'){
+        uiScreen = UI_SCREEN.PAUSE_MENU;
+        playSound('chip');
+      }
+      return;
+    }
+
+    if (uiScreen === UI_SCREEN.STATS_TEAM){
+      if (code === 'ArrowUp' || code === 'ArrowDown'){
+        teamMenuIndex = (teamMenuIndex === 0) ? 1 : 0;
+        playSound('chip');
+      } else if (code === 'Escape'){
+        uiScreen = UI_SCREEN.MAIN_MENU;
+        playSound('chip');
+      } else if (code === 'Enter'){
+        uiScreen = UI_SCREEN.STATS_ROSTER;
+        rosterIndex = 0;
+        rosterScroll = 0;
+        ensureRosterCursorInRange();
+        playSound('chip');
+      }
+      return;
+    }
+
+    if (uiScreen === UI_SCREEN.STATS_ROSTER){
+      if (code === 'ArrowUp'){
+        rosterIndex--;
+        ensureRosterCursorInRange();
+        playSound('chip');
+      } else if (code === 'ArrowDown'){
+        rosterIndex++;
+        ensureRosterCursorInRange();
+        playSound('chip');
+      } else if (code === 'Escape'){
+        uiScreen = UI_SCREEN.STATS_TEAM;
+        playSound('chip');
+      }
+      return;
+    }
+  }
+
+  if (e.code === 'Escape'){
+    // v115: open in-game pause menu
+    isPaused = true;
+    pauseMenuIndex = 0;
+    uiScreen = UI_SCREEN.PAUSE_MENU;
+    // Prevent "stuck keys"
+    keys['ArrowUp'] = false; keys['ArrowDown'] = false; keys['ArrowLeft'] = false; keys['ArrowRight'] = false;
+    keys['Space'] = false; keys['KeyX'] = false;
+    justPressed['ArrowUp'] = false; justPressed['ArrowDown'] = false; justPressed['ArrowLeft'] = false; justPressed['ArrowRight'] = false;
+    justPressed['Space'] = false; justPressed['KeyX'] = false;
     e.preventDefault();
     return;
   }
@@ -1273,6 +1545,9 @@ function buildTeam(team, attackDir){
     const wx = OVAL_CX + (r.rx * flip);
     const wy = OVAL_CY + r.ry;
     out.push({
+      roleIndex: i,
+      baseRx: r.rx,
+      baseRy: r.ry,
       x: wx, y: wy,
       homeX: wx, homeY: wy,
       roamX: wx, roamY: wy,
@@ -1334,6 +1609,11 @@ function rebuildPlayers(){
   allPlayers = [...sloths, ...dropbears];
   allPlayers.forEach(p => p.controlled=false);
   sloths[0].controlled=true;
+
+  // v115: apply formations to home positions (snap to setup so resets/centre bounces reflect shape)
+  dropbearsFormation = FORMATION.BALANCED;
+  applyFormationToTeam('sloths', slothsFormation, true);
+  applyFormationToTeam('dropbears', dropbearsFormation, true);
 }
 
 // Score
@@ -1357,6 +1637,12 @@ function getScale(y){
 function showMessage(msg){
   messageText = msg;
   messageTimer = 90;
+}
+
+// v116: "PLAY ON" should always have a whistle.
+function declarePlayOn(){
+  showMessage('PLAY ON!');
+  playSound('quarterstart');
 }
 
 function showUmpireSignal(type){
@@ -2114,7 +2400,11 @@ function formationTarget(p, myCarrier){
     const inForward50 = distToGoal <= (FIFTY_METRE + 35);
     const supportBand = (p.band === 'fwd' || p.band === 'mid' || p.band === 'ruck');
 
-    let ahead = 150 + Math.random()*310;
+    const teamFormation = (p.team === 'sloths') ? slothsFormation : dropbearsFormation;
+    const aheadMult = (teamFormation === FORMATION.OFFENSIVE) ? 1.25
+                    : (teamFormation === FORMATION.DEFENSIVE) ? 0.78
+                    : 1.0;
+    let ahead = (150 + Math.random()*310) * aheadMult;
     if (supportBand) ahead += 120;
     if (inAttackingHalf) ahead += 80;
     if (inForward50) ahead += 120;
@@ -2130,7 +2420,11 @@ function formationTarget(p, myCarrier){
       else tx = Math.max(tx, RIGHT_GOAL_X - FIFTY_METRE + 35);
     }
 
-    const tetherBase = (p.band === 'mid' || p.band === 'ruck') ? 0.36 : 0.58;
+    const tetherBase0 = (p.band === 'mid' || p.band === 'ruck') ? 0.36 : 0.58;
+    const tetherMult = (teamFormation === FORMATION.OFFENSIVE) ? 0.78
+                    : (teamFormation === FORMATION.DEFENSIVE) ? 1.25
+                    : 1.0;
+    const tetherBase = Math.max(0.15, Math.min(0.92, tetherBase0 * tetherMult));
     const tether = inForward50 ? (tetherBase * 0.62) : (inAttackingHalf ? (tetherBase * 0.82) : tetherBase);
     tx = tx*(1-tether) + p.homeX*tether;
     ty = ty*(1-tether) + p.homeY*tether;
@@ -2811,6 +3105,327 @@ function drawPauseOverlay(){
   ctx.fillStyle = 'rgba(255,255,255,0.85)';
   ctx.fillText('Press ESC to resume', canvas.width/2, canvas.height/2 + 54);
   ctx.restore();
+}
+
+// ===================
+// MENU RENDERING (v113)
+// ===================
+function drawMenuBackground(){
+  ctx.save();
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+  // subtle vignette
+  const g = ctx.createRadialGradient(400,300,120,400,300,520);
+  g.addColorStop(0,'rgba(255,215,0,0.10)');
+  g.addColorStop(1,'rgba(0,0,0,0.55)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.restore();
+}
+
+function drawMenuHeader(title){
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.font = 'bold 42px Courier New';
+  ctx.fillStyle = '#000';
+  ctx.fillText('ON THE FULL', 402, 24);
+  ctx.fillStyle = '#ffd700';
+  ctx.fillText('ON THE FULL', 400, 22);
+  ctx.font = 'bold 16px Courier New';
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.fillText(title, 400, 78);
+  ctx.restore();
+}
+
+function drawMenuOption(x, y, w, h, label, isSelected){
+  ctx.save();
+  ctx.fillStyle = isSelected ? 'rgba(255,215,0,0.18)' : 'rgba(0,0,0,0.55)';
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = isSelected ? '#ffd700' : 'rgba(255,255,255,0.25)';
+  ctx.lineWidth = isSelected ? 3 : 2;
+  ctx.strokeRect(x, y, w, h);
+  ctx.font = 'bold 22px Courier New';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = isSelected ? '#ffd700' : '#fff';
+  ctx.fillText(label, x + w/2, y + h/2);
+  ctx.restore();
+}
+
+function drawMiniOvalDiagram(x, y, w, h, markerColor, rx, ry){
+  // Simple top-down oval with a jersey-colored position marker.
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.fillRect(x, y, w, h);
+
+  // Grass
+  ctx.fillStyle = '#2d6b2d';
+  ctx.fillRect(x+2, y+2, w-4, h-4);
+
+  // Oval outline
+  ctx.strokeStyle = 'rgba(255,255,255,0.70)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.ellipse(x + w/2, y + h/2, (w/2) - 6, (h/2) - 8, 0, 0, Math.PI*2);
+  ctx.stroke();
+
+  // Center line + center circle
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(x + w/2, y + 6);
+  ctx.lineTo(x + w/2, y + h - 6);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.ellipse(x + w/2, y + h/2, 10, 7, 0, 0, Math.PI*2);
+  ctx.stroke();
+
+  // Map role offsets into diagram coordinates (use base role coordinates)
+  const nx = clamp(rx / 900, -1, 1);
+  const ny = clamp(ry / 360, -1, 1);
+  const px = (x + w/2) + nx * ((w/2) - 14);
+  const py = (y + h/2) + ny * ((h/2) - 16);
+
+  // Position marker (jersey color)
+  const s = 10;
+  ctx.fillStyle = markerColor;
+  ctx.fillRect(px - s/2, py - s/2, s, s);
+  ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(px - s/2, py - s/2, s, s);
+
+  ctx.restore();
+}
+
+function drawMainMenuScreen(){
+  drawMenuBackground();
+  drawMenuHeader('MAIN MENU');
+  const w = 420, h = 64;
+  const x = 400 - w/2;
+  drawMenuOption(x, 170, w, h, 'PLAY GAME', menuIndex === 0);
+  drawMenuOption(x, 250, w, h, 'PLAYER STATS', menuIndex === 1);
+  ctx.save();
+  ctx.font = 'bold 14px Courier New';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.fillText('Use ↑/↓ then ENTER', 400, 340);
+  ctx.restore();
+}
+
+function drawStatsTeamScreen(){
+  drawMenuBackground();
+  drawMenuHeader('PLAYER STATS');
+  const w = 520, h = 56;
+  const x = 400 - w/2;
+  drawMenuOption(x, 170, w, h, TEAM_DISPLAY.sloths.toUpperCase(), teamMenuIndex === 0);
+  drawMenuOption(x, 240, w, h, TEAM_DISPLAY.dropbears.toUpperCase(), teamMenuIndex === 1);
+  ctx.save();
+  ctx.font = 'bold 14px Courier New';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.fillText('Use ↑/↓ then ENTER   •   ESC to go back', 400, 320);
+  ctx.restore();
+}
+
+function drawStatsRosterScreen(){
+  drawMenuBackground();
+  const team = TEAM_BY_MENU_INDEX[teamMenuIndex];
+  const roster = getRosterForTeam(team);
+  ensureRosterCursorInRange();
+  const selected = roster[rosterIndex] || null;
+
+  drawMenuHeader(`${TEAM_DISPLAY[team].toUpperCase()} — ROSTER`);
+
+  // Left: scrollable list (names + position)
+  const listX = 50, listY = 120, listW = 360, listH = 420;
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(listX, listY, listW, listH);
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(listX, listY, listW, listH);
+  ctx.beginPath();
+  ctx.rect(listX, listY, listW, listH);
+  ctx.clip();
+
+  const rowH = 32;
+  const visibleRows = Math.floor(listH / rowH);
+  const start = rosterScroll;
+  const end = Math.min(roster.length, start + visibleRows);
+
+  ctx.font = 'bold 14px Courier New';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  for (let i = start; i < end; i++){
+    const p = roster[i];
+    const y = listY + (i - start) * rowH;
+    const isSel = i === rosterIndex;
+    if (isSel){
+      ctx.fillStyle = 'rgba(255,215,0,0.18)';
+      ctx.fillRect(listX + 6, y + 4, listW - 12, rowH - 8);
+      ctx.strokeStyle = '#ffd700';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(listX + 6, y + 4, listW - 12, rowH - 8);
+    }
+    const posName = POSITION_NAMES_18[p?.roleIndex ?? 0] || (p?.band ?? '').toUpperCase();
+    ctx.fillStyle = isSel ? '#ffd700' : '#fff';
+    ctx.fillText(p.name, listX + 16, y + rowH/2);
+    ctx.fillStyle = isSel ? 'rgba(255,215,0,0.85)' : 'rgba(255,255,255,0.70)';
+    ctx.textAlign = 'right';
+    ctx.fillText(posName, listX + listW - 16, y + rowH/2);
+    ctx.textAlign = 'left';
+  }
+  ctx.restore();
+
+  // Right: big player card (portrait + full stat names)
+  const cardX = 430, cardY = 120, cardW = 320, cardH = 420;
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.60)';
+  ctx.fillRect(cardX, cardY, cardW, cardH);
+  ctx.strokeStyle = '#ffd700';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(cardX, cardY, cardW, cardH);
+
+  if (selected){
+    const portraitSize = 86;
+    const px = cardX + 18;
+    const py = cardY + 18;
+    ctx.fillStyle = '#111';
+    ctx.fillRect(px - 2, py - 2, portraitSize + 4, portraitSize + 4);
+    drawPlayerPortrait(selected, px, py, portraitSize);
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(px, py, portraitSize, portraitSize);
+
+    // v116: show a mini oval with a jersey-colored position marker to the right of the portrait
+    const ox = px + portraitSize + 18;
+    const oy = py;
+    const ow = (cardX + cardW - 18) - ox;
+    const oh = portraitSize;
+    const jersey = TEAM_COLORS_PORTRAIT[selected.team]?.primary || (selected.team === 'sloths' ? '#ff8c00' : '#2a2a2a');
+    const rrx = Number.isFinite(selected.baseRx) ? selected.baseRx : 0;
+    const rry = Number.isFinite(selected.baseRy) ? selected.baseRy : 0;
+    if (ow >= 80) drawMiniOvalDiagram(ox, oy, ow, oh, jersey, rrx, rry);
+
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.font = 'bold 18px Courier New';
+    ctx.fillStyle = '#ffd700';
+    ctx.fillText(selected.name, cardX + 18, py + portraitSize + 14);
+
+    const posName = POSITION_NAMES_18[selected?.roleIndex ?? 0] || (selected?.band ?? '').toUpperCase();
+    ctx.font = 'bold 13px Courier New';
+    ctx.fillStyle = 'rgba(255,255,255,0.80)';
+    ctx.fillText(posName, cardX + 18, py + portraitSize + 40);
+
+    // Stats
+    const statsY0 = py + portraitSize + 74;
+    const lineH = 22;
+    ctx.font = 'bold 13px Courier New';
+    for (let i = 0; i < STATS_META.length; i++){
+      const m = STATS_META[i];
+      const yy = statsY0 + i * lineH;
+      const label = `${m.label} (${m.abbr})`;
+      const val = getStat(selected, m.key);
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      ctx.fillText(label, cardX + 18, yy);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(String(val), cardX + cardW - 18, yy);
+      ctx.textAlign = 'left';
+    }
+  } else {
+    ctx.font = 'bold 16px Courier New';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.fillText('No player', cardX + cardW/2, cardY + cardH/2);
+  }
+
+  ctx.restore();
+
+  ctx.save();
+  ctx.font = 'bold 14px Courier New';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.fillText('Use ↑/↓ to browse   •   ESC to go back', 400, 550);
+  ctx.restore();
+}
+
+function drawMenuScreens(){
+  if (uiScreen === UI_SCREEN.MAIN_MENU) return drawMainMenuScreen();
+  if (uiScreen === UI_SCREEN.STATS_TEAM) return drawStatsTeamScreen();
+  if (uiScreen === UI_SCREEN.STATS_ROSTER) return drawStatsRosterScreen();
+  drawMainMenuScreen();
+}
+
+function drawInGameMenuOverlay(title, options, selectedIndex, selectedBorderIndex=null){
+  // Draws a translucent overlay with menu options; optional border on the "current" selection.
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  const w = 520;
+  const h = 260;
+  const x = (canvas.width - w) / 2;
+  const y = (canvas.height - h) / 2;
+  ctx.fillStyle = 'rgba(0,0,0,0.72)';
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = '#ffd700';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(x, y, w, h);
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.font = 'bold 22px Courier New';
+  ctx.fillStyle = '#ffd700';
+  ctx.fillText(title, canvas.width/2, y + 18);
+
+  const rowH = 54;
+  const baseY = y + 66;
+  for (let i = 0; i < options.length; i++){
+    const ry = baseY + i * rowH;
+    const isSel = (i === selectedIndex);
+    ctx.fillStyle = isSel ? 'rgba(255,215,0,0.18)' : 'rgba(255,255,255,0.06)';
+    ctx.fillRect(x + 18, ry, w - 36, rowH - 10);
+    ctx.strokeStyle = isSel ? '#ffd700' : 'rgba(255,255,255,0.25)';
+    ctx.lineWidth = isSel ? 3 : 2;
+    ctx.strokeRect(x + 18, ry, w - 36, rowH - 10);
+
+    if (selectedBorderIndex != null && i === selectedBorderIndex){
+      ctx.strokeStyle = '#00ff88';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(x + 22, ry + 4, w - 44, rowH - 18);
+    }
+
+    ctx.font = 'bold 20px Courier New';
+    ctx.fillStyle = isSel ? '#ffd700' : '#fff';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(options[i], canvas.width/2, ry + (rowH - 10)/2);
+  }
+
+  ctx.font = 'bold 14px Courier New';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.fillText('Use ↑/↓, ENTER   •   ESC to go back', canvas.width/2, y + h - 34);
+  ctx.restore();
+}
+
+function drawPauseMenuOverlay(){
+  drawInGameMenuOverlay('PAUSED', ['RESUME', 'CHANGE FORMATION'], pauseMenuIndex);
+}
+
+function drawFormationMenuOverlay(){
+  const opts = [
+    FORMATION_LABEL[FORMATION.BALANCED],
+    FORMATION_LABEL[FORMATION.OFFENSIVE],
+    FORMATION_LABEL[FORMATION.DEFENSIVE]
+  ];
+  drawInGameMenuOverlay('CHANGE FORMATION', opts, formationMenuIndex, formationListIndex(slothsFormation));
 }
 
 function drawMessage(){
@@ -3893,6 +4508,23 @@ function updateTeamAI(){
   const hotX = ball.x;
   const hotY = ball.y;
 
+  // v116: after kick-in/out-on-full grace ends, force a brief defensive engagement so
+  // the carrier doesn't get "left alone forever" in the backline.
+  const carrierNow = slothCarrier || bearCarrier;
+  if (kickInPlayOnBoostFrames > 0 && carrierNow){
+    const oppTeam = (carrierNow.team === 'sloths') ? 'dropbears' : 'sloths';
+    const press = allPlayers
+      .filter(pp => pp.team === oppTeam && !pp.hasBall)
+      .map(pp => ({ pp, d: Math.hypot(pp.x - carrierNow.x, pp.y - carrierNow.y) }))
+      .sort((a,b)=>a.d-b.d)
+      .slice(0, 3)
+      .map(o => o.pp);
+    for (const d of press){
+      // Let normal logic handle the rest; this just gets them moving.
+      moveToward(d, carrierNow.x, carrierNow.y, AI_SPEED_CHASE * 1.12);
+    }
+  }
+
   // jump progression
   for (const p of allPlayers){
     if (p.jumpFrames > 0){
@@ -4224,8 +4856,17 @@ function updateTeamAI(){
 // UPDATE LOOP
 // ===================
 function update(){
+  // v113: no simulation while in menus
+  if (uiScreen !== UI_SCREEN.GAME) return;
   // v101: hard pause (freeze all gameplay + timers)
   if (isPaused) return;
+
+  // v115: dropbears auto-formation based on score margin (±12 points)
+  const desiredBearFormation = computeDropbearsAutoFormation();
+  if (desiredBearFormation !== dropbearsFormation){
+    dropbearsFormation = desiredBearFormation;
+    applyFormationToTeam('dropbears', dropbearsFormation, false);
+  }
 
   allPlayers.forEach(p => {
     if (p.tackleCooldown > 0) p.tackleCooldown--;
@@ -4245,7 +4886,14 @@ function update(){
   });
 
   if (kickoffLockFrames > 0) kickoffLockFrames--;
+  const wasKickInGrace = (kickInGraceFrames > 0);
   if (kickInGraceFrames > 0) kickInGraceFrames--;
+  // v116: when kick-in/out-on-full grace ends, declare PLAY ON + allow defenders to engage.
+  if (wasKickInGrace && kickInGraceFrames === 0){
+    declarePlayOn();
+    kickInPlayOnBoostFrames = 3 * 60;
+  }
+  if (kickInPlayOnBoostFrames > 0) kickInPlayOnBoostFrames--;
   // v57: ensure umpire animation timing is fixed at 60fps (not display refresh rate)
   if (umpireDisplayFrames > 0) umpireDisplayFrames--;
 
@@ -4283,7 +4931,12 @@ function update(){
   } else if (gameState === 'markstop'){
     if (markLockFrames > 0) markLockFrames--;
     markStopFrames--;
-    if (markStopFrames <= 0) { gameState = 'playing'; markCarrier = null; }
+    // v116: auto PLAY ON after 5s mark protection expires
+    if (markStopFrames <= 0) {
+      gameState = 'playing';
+      markCarrier = null;
+      declarePlayOn();
+    }
   }
 
   const simActive = (gameState === 'playing' || gameState === 'markstop' || gameState === 'goalkick_flight');
@@ -4307,7 +4960,7 @@ function update(){
         gameState = 'playing';
         markStopFrames = 0;
         markCarrier = null;
-        showMessage('PLAY ON!');
+        declarePlayOn();
       }
     }
   } else {
@@ -4767,6 +5420,8 @@ function resetAfterScore(type, teamToStart, scoringEndSide=null, scoredY=null){
   }
 
   // Default: restart from the centre.
+  // v110: play the same whistle as quarter start when the ball is returned to the centre after a goal.
+  if (type === 'goal') playSound('quarterstart');
   const starter = nearestPlayer(teamToStart, OVAL_CX, OVAL_CY).best;
   if (starter){
     starter.x = OVAL_CX;
@@ -4818,24 +5473,46 @@ function gameLoop(ts){
     steps++;
   }
 
-  drawField();
-  drawGoalPosts();
-  drawLandingMarker();
+  function drawGameFrame(){
+    drawField();
+    drawGoalPosts();
+    drawLandingMarker();
 
-  const sorted = [...allPlayers].sort((a,b)=>a.y-b.y);
-  if (ball.height < 15) drawBall();
-  sorted.forEach(drawPlayer);
-  if (ball.height >= 15) drawBall();
+    const sorted = [...allPlayers].sort((a,b)=>a.y-b.y);
+    if (ball.height < 15) drawBall();
+    sorted.forEach(drawPlayer);
+    if (ball.height >= 15) drawBall();
 
-  drawKickMeter();
-  drawUI();
-  drawControlledPlayerHUD();
-  drawEnemyPossessionHUD();
-  drawMiniMap();
-  drawMessage();
-  drawGoalUmpire();
-  drawGoalKickMeter();
-  drawPauseOverlay();
+    drawKickMeter();
+    drawUI();
+    drawControlledPlayerHUD();
+    drawEnemyPossessionHUD();
+    drawMiniMap();
+    drawMessage();
+    drawGoalUmpire();
+    drawGoalKickMeter();
+  }
+
+  // v115: render menus / pause overlays
+  if (uiScreen === UI_SCREEN.PAUSE_MENU){
+    drawGameFrame();
+    drawPauseMenuOverlay();
+    requestAnimationFrame(gameLoop);
+    return;
+  }
+  if (uiScreen === UI_SCREEN.FORMATION_MENU){
+    drawGameFrame();
+    drawFormationMenuOverlay();
+    requestAnimationFrame(gameLoop);
+    return;
+  }
+  if (uiScreen !== UI_SCREEN.GAME){
+    drawMenuScreens();
+    requestAnimationFrame(gameLoop);
+    return;
+  }
+
+  drawGameFrame();
 
   requestAnimationFrame(gameLoop);
 }
