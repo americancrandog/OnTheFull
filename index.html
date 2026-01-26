@@ -1,0 +1,4847 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>ON THE FULL</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{
+      background:#1a1a2e;
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      justify-content:center;
+      min-height:100vh;
+      font-family:'Courier New', monospace;
+    }
+    canvas{
+      border:4px solid #ffd700;
+      box-shadow:0 0 20px rgba(255,215,0,0.3);
+    }
+    .title{
+      color:#ffd700;
+      font-size:28px;
+      margin-bottom:10px;
+      text-transform:uppercase;
+      letter-spacing:6px;
+      text-shadow:3px 3px 0 #ff6b00;
+    }
+    .controls{
+      color:#aaa;
+      font-size:12px;
+      margin-top:15px;
+      text-align:center;
+      line-height:1.8;
+      max-width:860px;
+    }
+    .controls span{color:#ffd700}
+  </style>
+</head>
+<body>
+  <div class="title">🏈 ON THE FULL 🏈</div>
+  <canvas id="game" width="800" height="600"></canvas>
+  <div class="controls">
+    <span>ARROWS</span> Move &nbsp;|&nbsp;
+    <span>TAP SPACE</span> Chip Kick &nbsp;|&nbsp;
+    <span>HOLD SPACE</span> Pass / Punt &nbsp;|&nbsp;
+    <span>SPACE (IN 50)</span> Goal Shot Meter &nbsp;|&nbsp;
+    <span>X</span> Handball / Tackle / Change Player
+  </div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+// ===================
+// 8-BIT SOUND SYSTEM
+// ===================
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+function playSound(type){
+  if(audioCtx.state === 'suspended') audioCtx.resume();
+  
+  const now = audioCtx.currentTime;
+  const makeNoiseBuffer = (durationSec) => {
+    const sr = audioCtx.sampleRate;
+    const len = Math.max(1, Math.floor(sr * durationSec));
+    const buf = audioCtx.createBuffer(1, len, sr);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++){
+      // White noise
+      data[i] = (Math.random() * 2 - 1);
+    }
+    return buf;
+  };
+  
+  switch(type){
+    case 'kick': {
+      // Punchy kick sound
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(150, now);
+      osc.frequency.exponentialRampToValueAtTime(60, now + 0.1);
+      gain.gain.setValueAtTime(0.3, now);
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.15);
+      osc.start(now);
+      osc.stop(now + 0.15);
+      break;
+    }
+    case 'chip': {
+      // Lighter chip kick sound
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(220, now);
+      osc.frequency.exponentialRampToValueAtTime(110, now + 0.08);
+      gain.gain.setValueAtTime(0.25, now);
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+      osc.start(now);
+      osc.stop(now + 0.1);
+      break;
+    }
+    case 'punt': {
+      // v74: REALLY big full-power thump (regular 'kick' unchanged)
+      const dur = 0.32;
+
+      // Low sub thump
+      const o1 = audioCtx.createOscillator();
+      const g1 = audioCtx.createGain();
+      o1.connect(g1);
+      g1.connect(audioCtx.destination);
+      o1.type = 'sine';
+      o1.frequency.setValueAtTime(95, now);
+      o1.frequency.exponentialRampToValueAtTime(38, now + 0.24);
+      g1.gain.setValueAtTime(0.0001, now);
+      g1.gain.linearRampToValueAtTime(0.42, now + 0.01);
+      g1.gain.exponentialRampToValueAtTime(0.01, now + dur);
+
+      // Mid "body" hit
+      const o2 = audioCtx.createOscillator();
+      const g2 = audioCtx.createGain();
+      o2.connect(g2);
+      g2.connect(audioCtx.destination);
+      o2.type = 'square';
+      o2.frequency.setValueAtTime(170, now);
+      o2.frequency.exponentialRampToValueAtTime(70, now + 0.18);
+      g2.gain.setValueAtTime(0.0001, now);
+      g2.gain.linearRampToValueAtTime(0.18, now + 0.01);
+      g2.gain.exponentialRampToValueAtTime(0.01, now + 0.22);
+
+      // Sharp transient click (filtered noise)
+      const src = audioCtx.createBufferSource();
+      src.buffer = makeNoiseBuffer(0.06);
+      const hp = audioCtx.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.frequency.setValueAtTime(1200, now);
+      const ng = audioCtx.createGain();
+      src.connect(hp);
+      hp.connect(ng);
+      ng.connect(audioCtx.destination);
+      ng.gain.setValueAtTime(0.0001, now);
+      ng.gain.linearRampToValueAtTime(0.10, now + 0.002);
+      ng.gain.exponentialRampToValueAtTime(0.01, now + 0.05);
+
+      o1.start(now); o1.stop(now + dur);
+      o2.start(now); o2.stop(now + 0.24);
+      src.start(now); src.stop(now + 0.06);
+      break;
+    }
+    case 'handball': {
+      // Quick pop
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(300, now);
+      osc.frequency.exponentialRampToValueAtTime(150, now + 0.06);
+      gain.gain.setValueAtTime(0.25, now);
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.08);
+      osc.start(now);
+      osc.stop(now + 0.08);
+      break;
+    }
+    case 'mark': {
+      // v76: Satisfying mark "THWACK" (cleaner, less squeaky)
+      // Snap (filtered noise)
+      const src = audioCtx.createBufferSource();
+      src.buffer = makeNoiseBuffer(0.09);
+
+      const bp = audioCtx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(1700, now);
+      bp.Q.setValueAtTime(1.2, now);
+
+      const gain = audioCtx.createGain();
+      src.connect(bp);
+      bp.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(0.18, now + 0.004);
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.08);
+
+      // Body (short low thud)
+      const o1 = audioCtx.createOscillator();
+      const g1 = audioCtx.createGain();
+      o1.connect(g1);
+      g1.connect(audioCtx.destination);
+      o1.type = 'sine';
+      o1.frequency.setValueAtTime(190, now);
+      o1.frequency.exponentialRampToValueAtTime(120, now + 0.08);
+      g1.gain.setValueAtTime(0.0001, now);
+      g1.gain.linearRampToValueAtTime(0.12, now + 0.006);
+      g1.gain.exponentialRampToValueAtTime(0.01, now + 0.12);
+
+      // Tiny click at onset
+      const o2 = audioCtx.createOscillator();
+      const g2 = audioCtx.createGain();
+      o2.connect(g2);
+      g2.connect(audioCtx.destination);
+      o2.type = 'square';
+      o2.frequency.setValueAtTime(1400, now);
+      g2.gain.setValueAtTime(0.0001, now);
+      g2.gain.linearRampToValueAtTime(0.025, now + 0.002);
+      g2.gain.exponentialRampToValueAtTime(0.01, now + 0.02);
+
+      src.start(now); src.stop(now + 0.09);
+      o1.start(now); o1.stop(now + 0.12);
+      o2.start(now); o2.stop(now + 0.02);
+      break;
+    }
+    case 'boo': {
+      // v77: Booing crowd (make it obviously audible)
+      const dur = 1.05;
+
+      // Noisy crowd layer with a "boo" formant
+      const src = audioCtx.createBufferSource();
+      src.buffer = makeNoiseBuffer(dur);
+
+      const bp = audioCtx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(320, now);
+      bp.Q.setValueAtTime(0.6, now);
+
+      const lp = audioCtx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.setValueAtTime(1400, now);
+
+      const gain = audioCtx.createGain();
+      src.connect(bp);
+      bp.connect(lp);
+      lp.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(0.26, now + 0.06);
+      gain.gain.setValueAtTime(0.22, now + 0.70);
+      gain.gain.exponentialRampToValueAtTime(0.02, now + dur);
+
+      // Tonal "boo" layer (two detuned saws + soft wobble)
+      const o1 = audioCtx.createOscillator();
+      const o2 = audioCtx.createOscillator();
+      const og = audioCtx.createGain();
+      o1.type = 'sawtooth';
+      o2.type = 'sawtooth';
+      o1.frequency.setValueAtTime(210, now);
+      o2.frequency.setValueAtTime(216, now);
+
+      const lfo = audioCtx.createOscillator();
+      const lfoGain = audioCtx.createGain();
+      lfo.type = 'sine';
+      lfo.frequency.setValueAtTime(4.5, now);
+      lfoGain.gain.setValueAtTime(6, now);
+      lfo.connect(lfoGain);
+      lfoGain.connect(o1.frequency);
+      lfoGain.connect(o2.frequency);
+
+      o1.connect(og);
+      o2.connect(og);
+      og.connect(audioCtx.destination);
+      og.gain.setValueAtTime(0.0001, now);
+      og.gain.linearRampToValueAtTime(0.10, now + 0.06);
+      og.gain.exponentialRampToValueAtTime(0.01, now + dur);
+
+      src.start(now); src.stop(now + dur);
+      lfo.start(now); lfo.stop(now + dur);
+      o1.start(now); o1.stop(now + dur);
+      o2.start(now); o2.stop(now + dur);
+      break;
+    }
+    case 'tackle': {
+      // Crunchy hit
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(90, now);
+      osc.frequency.exponentialRampToValueAtTime(35, now + 0.15);
+      gain.gain.setValueAtTime(0.35, now);
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+      osc.start(now);
+      osc.stop(now + 0.2);
+      break;
+    }
+    case 'goal': {
+      // v72: Crowd ROAR (plays when umpire signals, not on line-cross)
+      const src = audioCtx.createBufferSource();
+      src.buffer = makeNoiseBuffer(1.15);
+
+      const bp = audioCtx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(900, now);
+      bp.Q.setValueAtTime(0.7, now);
+
+      const lp = audioCtx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.setValueAtTime(2200, now);
+
+      const gain = audioCtx.createGain();
+      src.connect(bp);
+      bp.connect(lp);
+      lp.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(0.22, now + 0.05);
+      gain.gain.exponentialRampToValueAtTime(0.03, now + 1.10);
+
+      src.start(now);
+      src.stop(now + 1.15);
+      break;
+    }
+    case 'behind': {
+      // v72: Muted crowd reaction
+      const src = audioCtx.createBufferSource();
+      src.buffer = makeNoiseBuffer(0.70);
+
+      const lp = audioCtx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.setValueAtTime(650, now);
+
+      const gain = audioCtx.createGain();
+      src.connect(lp);
+      lp.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(0.11, now + 0.04);
+      gain.gain.exponentialRampToValueAtTime(0.02, now + 0.65);
+
+      src.start(now);
+      src.stop(now + 0.70);
+      break;
+    }
+    case 'whistle': {
+      // v73: Long steady AFL-style siren note (used for quarter end / full time)
+      // v78: halve siren duration
+      // v80: halve again
+      // v81: make siren 0.5s longer
+      const dur = 1.1;
+
+      const o1 = audioCtx.createOscillator();
+      const o2 = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+
+      o1.type = 'sawtooth';
+      o2.type = 'sawtooth';
+      // Slight detune for thickness
+      o1.frequency.setValueAtTime(520, now);
+      o2.frequency.setValueAtTime(528, now);
+
+      // Gentle wobble (LFO)
+      const lfo = audioCtx.createOscillator();
+      const lfoGain = audioCtx.createGain();
+      lfo.type = 'sine';
+      lfo.frequency.setValueAtTime(5.5, now);
+      lfoGain.gain.setValueAtTime(12, now); // Hz deviation
+      lfo.connect(lfoGain);
+      lfoGain.connect(o1.frequency);
+      lfoGain.connect(o2.frequency);
+
+      o1.connect(gain);
+      o2.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(0.22, now + 0.08);
+      gain.gain.setValueAtTime(0.22, now + (dur - 0.20));
+      gain.gain.exponentialRampToValueAtTime(0.01, now + dur);
+
+      lfo.start(now);
+      o1.start(now);
+      o2.start(now);
+      lfo.stop(now + dur);
+      o1.stop(now + dur);
+      o2.stop(now + dur);
+      break;
+    }
+    case 'bounce': {
+      // Ball hitting ground
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(180, now);
+      osc.frequency.exponentialRampToValueAtTime(60, now + 0.1);
+      gain.gain.setValueAtTime(0.2, now);
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.12);
+      osc.start(now);
+      osc.stop(now + 0.12);
+      break;
+    }
+    case 'quarterstart': {
+      // v80: Short umpire whistle blow for quarter start
+      // v81: slightly longer + faster oscillation
+      const dur = 0.32;
+
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(2400, now);
+
+      // Faster "warble" to feel like a real whistle
+      const lfo = audioCtx.createOscillator();
+      const lfoGain = audioCtx.createGain();
+      lfo.type = 'sine';
+      lfo.frequency.setValueAtTime(26, now); // fast oscillation
+      lfoGain.gain.setValueAtTime(180, now); // Hz deviation
+      lfo.connect(lfoGain);
+      lfoGain.connect(osc.frequency);
+
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(0.16, now + 0.01);
+      gain.gain.setValueAtTime(0.14, now + (dur - 0.08));
+      gain.gain.exponentialRampToValueAtTime(0.01, now + dur);
+
+      lfo.start(now);
+      osc.start(now);
+      lfo.stop(now + dur);
+      osc.stop(now + dur);
+      break;
+    }
+  }
+}
+
+// ===================
+// PLAYER PORTRAIT SYSTEM
+// ===================
+
+const TEAM_COLORS_PORTRAIT = {
+  sloths: {
+    primary: '#ff8c00',
+    secondary: '#cc6600',
+    accent: '#ffaa33',
+    dark: '#994400'
+  },
+  dropbears: {
+    primary: '#2a2a2a',
+    secondary: '#1a1a1a',
+    accent: '#4a4a4a',
+    dark: '#0a0a0a'
+  }
+};
+
+const SKIN_TONES = {
+  pale:      { base: '#fde7d6', shadow: '#e4c4ac', dark: '#c9a88c', highlight: '#fff5eb', blush: '#f0c8b8' },
+  fair:      { base: '#f5d0b0', shadow: '#daa878', dark: '#b8865c', highlight: '#fce4cc', blush: '#e8b898' },
+  medium:    { base: '#e0b088', shadow: '#c48c60', dark: '#a06840', highlight: '#f0c8a0', blush: '#d09870' },
+  olive:     { base: '#c9a06a', shadow: '#a67c4a', dark: '#845c30', highlight: '#ddb880', blush: '#b88c58' },
+  tan:       { base: '#a67c52', shadow: '#8a6040', dark: '#6a442c', highlight: '#c09870', blush: '#946c48' },
+  brown:     { base: '#8d5c3c', shadow: '#6b4428', dark: '#4d3018', highlight: '#a87850', blush: '#7d4c30' },
+  dark:      { base: '#5c3c28', shadow: '#402818', dark: '#2a1810', highlight: '#785040', blush: '#4c3020' }
+};
+
+const HAIR_COLORS = {
+  black:       { base: '#1a1a1a', shadow: '#0a0a0a', highlight: '#3a3a3a', mid: '#252525' },
+  darkbrown:   { base: '#3d2314', shadow: '#2a1608', highlight: '#5a3828', mid: '#4a2a18' },
+  brown:       { base: '#5a3825', shadow: '#3d2415', highlight: '#7a5438', mid: '#6a4830' },
+  auburn:      { base: '#8b4513', shadow: '#5c2d0a', highlight: '#a85a28', mid: '#7a3a10' },
+  ginger:      { base: '#c45c10', shadow: '#8a3a08', highlight: '#e07828', mid: '#a84a0c' },
+  blonde:      { base: '#c9a86c', shadow: '#a08050', highlight: '#e0c890', mid: '#b89858' },
+  lightblonde: { base: '#dbc078', shadow: '#b89850', highlight: '#f0d898', mid: '#c8a860' },
+  grey:        { base: '#787878', shadow: '#585858', highlight: '#989898', mid: '#686868' }
+};
+
+// Format: [skinTone, hairColor (null=bald), hairStyle, facialHair, faceShape, hasHeadband]
+const PLAYER_APPEARANCES = {
+  'D Rogers':     ['fair', 'brown', 'medium', 'none', 'oval', false],
+  'J Sharpe':     ['pale', 'black', 'short', 'none', 'oval', false],
+  'M Keane':      ['medium', 'darkbrown', 'wavy', 'beard', 'oval', false],
+  'A Fulton':     ['olive', 'black', 'buzzcut', 'goatee', 'round', false],
+  'T McBride':    ['fair', 'ginger', 'curly', 'none', 'oval', true],
+  'S Nolan':      ['tan', 'black', 'short', 'moustache', 'round', false],
+  'C Henson':     ['pale', 'blonde', 'shaggy', 'none', 'oval', false],
+  'L Parry':      ['medium', 'brown', 'mullet', 'none', 'round', false],
+  'B Sutton':     ['brown', 'black', 'buzzcut', 'beard', 'round', false],
+  'R Walsh':      ['fair', 'auburn', 'medium', 'none', 'oval', false],
+  'K Devlin':     ['olive', 'darkbrown', 'spiked', 'none', 'oval', false],
+  'P Monroe':     ['dark', 'black', 'short', 'none', 'round', false],
+  'H Carver':     ['pale', 'lightblonde', 'wavy', 'none', 'oval', false],
+  'E Donnelly':   ['fair', 'brown', 'short', 'none', 'oval', false],
+  'G Barrett':    ['medium', 'black', 'curly', 'beard', 'round', false],
+  'I Caldwell':   ['tan', null, 'short', 'goatee', 'oval', false],
+  'N Fraser':     ['fair', 'ginger', 'shaggy', 'moustache', 'oval', false],
+  'V Oates':      ['olive', 'grey', 'short', 'none', 'round', false],
+  'O Sinclair':   ['pale', 'black', 'medium', 'none', 'oval', false],
+  'W Bennett':    ['fair', 'darkbrown', 'buzzcut', 'none', 'round', false],
+  'F Hargreaves': ['medium', 'auburn', 'wavy', 'beard', 'round', false],
+  'U Price':      ['brown', 'black', 'short', 'goatee', 'oval', false],
+  'Q Jamison':    ['olive', 'brown', 'spiked', 'none', 'oval', true],
+  'Y Mercer':     ['tan', 'black', 'curly', 'none', 'round', false],
+  'Z Carlisle':   ['pale', 'lightblonde', 'mullet', 'none', 'round', false],
+  'X Dwyer':      ['fair', 'ginger', 'shaggy', 'none', 'oval', false],
+  'J Morrow':     ['dark', 'black', 'buzzcut', 'beard', 'round', false],
+  'D Whittaker':  ['medium', 'darkbrown', 'medium', 'none', 'oval', false],
+  'A Pritchard':  ['fair', 'lightblonde', 'short', 'none', 'round', false],
+  'S Ellison':    ['olive', 'black', 'wavy', 'none', 'oval', false],
+  'C Rowe':       ['pale', 'brown', 'curly', 'none', 'oval', false],
+  'L Matheson':   ['tan', null, 'short', 'beard', 'round', false],
+  'B Hawthorne':  ['fair', 'auburn', 'spiked', 'none', 'round', false],
+  'R Gallagher':  ['medium', 'black', 'medium', 'moustache', 'oval', false],
+  'K Ritchie':    ['brown', 'darkbrown', 'short', 'none', 'oval', false],
+  'P Vaughan':    ['fair', 'darkbrown', 'shaggy', 'none', 'round', false]
+};
+
+function getPlayerAppearance(name) {
+  return PLAYER_APPEARANCES[name] || ['fair', 'brown', 'short', 'none', 'oval', false];
+}
+
+function drawPlayerPortrait(p, destX, destY, size) {
+  if (!p || !p.name) return;
+  
+  const [skinKey, hairKey, hairStyle, facialHair, faceShape, hasHeadband] = getPlayerAppearance(p.name);
+  const skin = SKIN_TONES[skinKey] || SKIN_TONES.fair;
+  const hair = hairKey ? HAIR_COLORS[hairKey] : null;
+  const teamColors = TEAM_COLORS_PORTRAIT[p.team] || TEAM_COLORS_PORTRAIT.sloths;
+  
+  const s = size / 38;
+
+  // Ensure nothing (hair/headbands/etc) can draw outside the portrait box.
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(destX, destY, size, size);
+  ctx.clip();
+  
+  function px(x, y, w, h, color) {
+    ctx.fillStyle = color;
+    ctx.fillRect(destX + Math.floor(x * s), destY + Math.floor(y * s), Math.ceil(w * s), Math.ceil(h * s));
+  }
+  
+  // === BACKGROUND ===
+  px(0, 0, 38, 38, '#2d6b2d');
+  px(0, 0, 38, 4, '#3a7a3a');
+  px(0, 4, 38, 2, '#357035');
+  
+  // === JERSEY BASE ===
+  px(0, 33, 38, 5, teamColors.primary);
+  px(0, 33, 6, 5, teamColors.secondary);
+  px(32, 33, 6, 5, teamColors.secondary);
+  px(12, 33, 14, 1, teamColors.accent);
+  
+  // === NECK ===
+  px(14, 28, 10, 6, skin.base);
+  px(14, 28, 2, 6, skin.shadow);
+  px(22, 29, 2, 4, skin.highlight);
+  
+  // V-neck
+  px(15, 33, 8, 2, teamColors.dark);
+  px(16, 34, 6, 2, skin.shadow);
+  
+  // === FACE DIMENSIONS ===
+  const faceL = 7;
+  const faceR = 31;
+  const faceT = 4;
+  const faceB = 28;
+  const faceW = faceR - faceL;
+  const faceCX = faceL + faceW / 2;
+  
+  const faceInset = faceShape === 'round' ? 1 : 0;
+  const fL = faceL + faceInset;
+  const fR = faceR - faceInset;
+  const fW = fR - fL;
+  
+  // === FACE ===
+  px(fL, faceT + 4, fW, 20, skin.base);
+  px(fL + 5, faceT, fW - 10, 2, skin.base);
+  px(fL + 3, faceT + 2, fW - 6, 2, skin.base);
+  px(fL + 1, faceT + 3, fW - 2, 2, skin.base);
+  px(fL + 1, faceB - 4, fW - 2, 2, skin.base);
+  px(fL + 3, faceB - 2, fW - 6, 2, skin.base);
+  px(fL + 5, faceB, fW - 10, 1, skin.base);
+  px(fL, faceT + 5, 3, 16, skin.shadow);
+  px(fL + 1, faceT + 6, 2, 14, skin.dark);
+  px(fR - 3, faceT + 6, 2, 14, skin.highlight);
+  px(fL + 3, faceT + 12, 3, 2, skin.blush);
+  px(fR - 6, faceT + 12, 3, 2, skin.blush);
+  px(fL + 2, faceB - 4, 2, 2, skin.shadow);
+  px(fR - 4, faceB - 4, 2, 2, skin.shadow);
+  
+  // === EARS ===
+  px(fL - 2, faceT + 10, 3, 5, skin.base);
+  px(fL - 2, faceT + 11, 1, 3, skin.shadow);
+  px(fR - 1, faceT + 10, 3, 5, skin.base);
+  px(fR + 1, faceT + 11, 1, 3, skin.highlight);
+  
+  // === EYES ===
+  const eyeY = faceT + 10;
+  const leftEyeX = fL + 3;
+  const rightEyeX = fR - 9;
+  
+  px(leftEyeX - 1, eyeY - 1, 8, 2, skin.dark);
+  px(rightEyeX - 1, eyeY - 1, 8, 2, skin.dark);
+  px(leftEyeX + 1, eyeY + 1, 5, 2, '#d8d8d0');
+  px(rightEyeX + 1, eyeY + 1, 5, 2, '#d8d8d0');
+  
+  const irisColor = skinKey === 'dark' || skinKey === 'brown' ? '#1a1008' : '#283848';
+  px(leftEyeX + 2, eyeY + 1, 3, 2, irisColor);
+  px(rightEyeX + 2, eyeY + 1, 3, 2, irisColor);
+  px(leftEyeX + 4, eyeY + 1, 1, 1, '#c0c0c0');
+  px(rightEyeX + 4, eyeY + 1, 1, 1, '#c0c0c0');
+  
+  const browColor = hair ? hair.shadow : '#1a1a1a';
+  const browBase = hair ? hair.base : skin.dark;
+  px(leftEyeX - 1, eyeY - 3, 8, 2, browColor);
+  px(leftEyeX, eyeY - 2, 6, 1, browBase);
+  px(rightEyeX - 1, eyeY - 3, 8, 2, browColor);
+  px(rightEyeX, eyeY - 2, 6, 1, browBase);
+  
+  // === NOSE ===
+  const noseX = Math.floor(faceCX) - 2;
+  const noseY = faceT + 13;
+  px(noseX, noseY, 4, 5, skin.shadow);
+  px(noseX + 1, noseY, 2, 4, skin.base);
+  px(noseX + 2, noseY + 1, 1, 2, skin.highlight);
+  px(noseX, noseY + 4, 1, 1, skin.dark);
+  px(noseX + 3, noseY + 4, 1, 1, skin.dark);
+  
+  // === MOUTH ===
+  const mouthY = faceT + 20;
+  const mouthX = Math.floor(faceCX) - 3;
+  px(mouthX, mouthY, 6, 1, skin.dark);
+  px(mouthX + 1, mouthY, 4, 1, '#704840');
+  px(mouthX + 1, mouthY + 1, 4, 1, skin.shadow);
+  
+  // === FACIAL HAIR ===
+  if (facialHair !== 'none' && hair) {
+    const beardColor = hair.base;
+    const beardShadow = hair.shadow;
+    
+    if (facialHair === 'beard') {
+      px(mouthX - 1, mouthY + 2, 8, 3, beardColor);
+      px(mouthX, mouthY + 3, 6, 2, beardShadow);
+      px(mouthX, mouthY + 5, 6, 2, beardColor);
+    }
+    if (facialHair === 'goatee') {
+      px(mouthX + 1, mouthY + 2, 4, 3, beardColor);
+      px(mouthX + 2, mouthY + 3, 2, 2, beardShadow);
+    }
+    if (facialHair === 'moustache') {
+      px(mouthX - 1, mouthY - 2, 8, 2, beardColor);
+      px(mouthX, mouthY - 1, 6, 1, beardShadow);
+    }
+  }
+  
+  // === HAIR ===
+  const hairTop = faceT - 3;
+  
+  if (hair) {
+    const h = hair;
+    
+    if (hairStyle === 'short') {
+      px(fL + 4, hairTop + 1, fW - 8, 2, h.base);
+      px(fL + 2, hairTop + 3, fW - 4, 2, h.base);
+      px(fL, hairTop + 5, fW, 3, h.base);
+      px(fL + 5, hairTop + 1, 6, 2, h.highlight);
+      px(fL + 1, faceT + 5, fW - 2, 2, h.shadow);
+      px(fL, faceT + 6, 2, 3, h.shadow);
+      px(fR - 2, faceT + 6, 2, 3, h.shadow);
+    }
+    if (hairStyle === 'medium') {
+      px(fL + 3, hairTop, fW - 6, 2, h.base);
+      px(fL + 1, hairTop + 2, fW - 2, 2, h.base);
+      px(fL - 1, hairTop + 4, fW + 2, 4, h.base);
+      px(fL + 5, hairTop, 8, 2, h.highlight);
+      px(fL - 1, faceT + 5, 3, 6, h.base);
+      px(fR - 2, faceT + 5, 3, 6, h.base);
+      px(fL - 1, faceT + 7, 2, 4, h.shadow);
+      px(fR - 1, faceT + 7, 2, 4, h.shadow);
+    }
+    if (hairStyle === 'wavy') {
+      px(fL + 2, hairTop - 1, fW - 4, 2, h.base);
+      px(fL - 1, hairTop + 1, fW + 2, 3, h.base);
+      px(fL - 2, hairTop + 4, fW + 4, 4, h.base);
+      px(fL + 4, hairTop - 1, 4, 2, h.highlight);
+      px(fL + 12, hairTop, 4, 2, h.highlight);
+      px(fL - 2, faceT + 4, 4, 9, h.base);
+      px(fR - 2, faceT + 4, 4, 9, h.base);
+      px(fL - 2, faceT + 7, 2, 6, h.shadow);
+      px(fR, faceT + 7, 2, 6, h.shadow);
+    }
+    if (hairStyle === 'curly') {
+      px(fL + 1, hairTop, fW - 2, 2, h.base);
+      px(fL - 1, hairTop + 2, fW + 2, 4, h.base);
+      px(fL - 2, faceT + 4, 4, 8, h.base);
+      px(fR - 2, faceT + 4, 4, 8, h.base);
+      px(fL + 3, hairTop - 1, 2, 2, h.highlight);
+      px(fL + 9, hairTop - 1, 2, 2, h.highlight);
+      px(fL + 15, hairTop, 2, 2, h.highlight);
+      px(fL + 6, hairTop + 2, 2, 2, h.shadow);
+      px(fL + 12, hairTop + 1, 2, 2, h.shadow);
+      px(fL - 1, faceT + 6, 2, 2, h.highlight);
+      px(fL - 1, faceT + 10, 2, 2, h.shadow);
+      px(fR, faceT + 7, 2, 2, h.highlight);
+    }
+    if (hairStyle === 'shaggy') {
+      px(fL + 2, hairTop - 2, fW - 4, 2, h.base);
+      px(fL - 1, hairTop, fW + 2, 3, h.base);
+      px(fL - 3, hairTop + 3, fW + 6, 5, h.base);
+      px(fL + 5, hairTop - 4, 3, 3, h.base);
+      px(fL + 11, hairTop - 3, 4, 2, h.base);
+      px(fL + 6, hairTop - 2, 5, 2, h.highlight);
+      px(fL - 3, faceT + 4, 5, 11, h.base);
+      px(fR - 2, faceT + 4, 5, 11, h.base);
+      px(fL - 3, faceT + 9, 3, 6, h.shadow);
+      px(fR, faceT + 9, 3, 6, h.shadow);
+    }
+    if (hairStyle === 'mullet') {
+      px(fL + 4, hairTop + 1, fW - 8, 2, h.base);
+      px(fL + 2, hairTop + 3, fW - 4, 2, h.base);
+      px(fL, hairTop + 5, fW, 3, h.base);
+      px(fL + 6, hairTop + 1, 8, 2, h.highlight);
+      px(fL, faceT + 6, 2, 4, h.base);
+      px(fR - 2, faceT + 6, 2, 4, h.base);
+      px(fL - 1, faceT + 9, 3, 12, h.base);
+      px(fR - 2, faceT + 9, 3, 12, h.base);
+      px(fL - 1, faceT + 15, 2, 6, h.shadow);
+      px(fR - 1, faceT + 15, 2, 6, h.shadow);
+    }
+    if (hairStyle === 'buzzcut') {
+      px(fL + 4, faceT + 1, fW - 8, 2, h.base);
+      px(fL + 2, faceT + 3, fW - 4, 2, h.base);
+      px(fL + 1, faceT + 4, fW - 2, 2, h.shadow);
+      px(fL + 6, faceT + 1, 6, 1, h.highlight);
+      px(fL, faceT + 5, 2, 2, h.shadow);
+      px(fR - 2, faceT + 5, 2, 2, h.shadow);
+    }
+    if (hairStyle === 'spiked') {
+      px(fL + 1, hairTop + 3, fW - 2, 5, h.base);
+      px(fL + 3, hairTop + 1, fW - 6, 3, h.base);
+      px(fL + 5, hairTop - 2, 2, 4, h.base);
+      px(fL + 5, hairTop - 2, 1, 2, h.highlight);
+      px(fL + 10, hairTop - 3, 2, 5, h.base);
+      px(fL + 10, hairTop - 3, 1, 2, h.highlight);
+      px(fL + 15, hairTop - 1, 2, 3, h.base);
+      px(fL + 15, hairTop - 1, 1, 1, h.highlight);
+      px(fL, faceT + 6, 2, 4, h.base);
+      px(fR - 2, faceT + 6, 2, 4, h.base);
+    }
+    
+    if (hasHeadband) {
+      const bandY = faceT + 6;
+      px(fL - 1, bandY, fW + 2, 2, '#ffffff');
+      px(fL, bandY + 1, fW, 1, '#dddddd');
+    }
+  } else {
+    // BALD
+    px(fL + 5, faceT, fW - 10, 2, skin.base);
+    px(fL + 3, faceT + 2, fW - 6, 2, skin.base);
+    px(fL + 7, faceT, fW - 14, 1, skin.highlight);
+    px(fL + 9, faceT + 1, 4, 1, '#ffffff80');
+    
+    if (hasHeadband) {
+      const bandY = faceT + 4;
+      px(fL - 1, bandY, fW + 2, 2, '#ffffff');
+      px(fL, bandY + 1, fW, 1, '#dddddd');
+    }
+  }
+
+  ctx.restore();
+}
+
+// ===================
+// END PLAYER PORTRAIT SYSTEM
+// ===================
+
+// ===================
+// GLOBAL SPEED SCALE
+// ===================
+const SPEED_SCALE = 0.50; // more dynamic overall
+
+// ===================
+// CONSTANTS
+// ===================
+const FIELD_WIDTH = 2400;
+const SKY_H = 70;
+
+// Goals
+const LEFT_GOAL_X = 50;
+const RIGHT_GOAL_X = 2350;
+
+// 50m arc radius
+const FIFTY_METRE = 450;
+
+// World centre
+const OVAL_CX = 1200;
+const OVAL_CY = 355;
+
+// AFL-ish oval via superellipse (wider middle, gentle taper)
+const OVAL_A = 1150;
+const OVAL_B = 560;
+const OVAL_N = 2.75;
+
+// Movement
+// Everyone runs the same speed; ball-carrier slightly slower.
+const RUN_SPEED = 1.05 * SPEED_SCALE * 5.0;
+const PLAYER_SPEED_NO_BALL   = RUN_SPEED;
+const PLAYER_SPEED_WITH_BALL = RUN_SPEED * 0.86 * 0.95 * 0.90 * 0.90; // v27: ball carrier another -10%
+
+const AI_SPEED_BASE          = RUN_SPEED;
+const AI_SPEED_CHASE         = RUN_SPEED;
+const AI_SPEED_ZONE          = RUN_SPEED;
+
+// Ball physics
+const BALL_FRICTION = 0.993;
+const BALL_HEIGHT_DECAY = 0.115;
+const HEIGHT_DRAW_BOOST = 1.35;
+
+// Handball
+const MAX_HANDBALL_DIST = 102; // v27: -40% effective distance (was 170)
+const HANDBALL_FRAMES = 26;
+const HANDBALL_MIN_DOT = 0.15;
+
+// Tackle
+const PLAYER_TACKLE_RANGE = 56;
+// v50: tighten AI tackle range (must be right up close)
+const AI_TACKLE_RANGE = 22; // was 32
+const NO_RECLAIM_FRAMES = 180;        // 3s
+const START_UNTACKLE_FRAMES = 180;
+// v99: 5 seconds grace after behind / out on the full kick-ins
+const KICKIN_GRACE_FRAMES = 5 * 60;
+const POSSESSION_TACKLE_GRACE_FRAMES = 18; // brief grace after possession
+
+// AI tackle behaviour
+// v50: dial down AI tackle efficacy ~30%
+const AI_TACKLE_CHANCE = 0.14;     // was 0.20
+const AI_TACKLE_COOLDOWN = 20;     // v30: less downtime between attempts
+// v50: reduce "pressure" radius so forced tackles don't happen from too far away
+const AI_PRESSURE_RADIUS = 56;     // was 80
+const AI_PRESSURE_MIN_OPP = 2;
+const AI_PRESSURE_FORCE_FRAMES = 90; // ~1.5s of sustained swarm => forced tackle if in range
+const AI_PRESSURE_FORCE_RANGE = 17;  // was 24
+
+// Kicking charge
+const KICK_CHARGE_MAX_FRAMES = 60;
+
+// Kick thresholds
+const KICK_TAP_FRAMES = 14; // allow a human "quick tap" to count as chip
+const KICK_PUNT_FULL_THRESHOLD = 0.92;
+// v85: tap-chip should never be a "to yourself" dink
+const CHIP_MIN_TARGET_DIST = 190;
+
+// Chip/pass/punt behaviour
+const CHIP_MAX_DIST = 260;          // tap should find nearest in aim direction
+const CHIP_FLIGHT_FRAMES = 18;
+const CHIP_HEIGHT = 26;
+
+const PASS_MIN_DESIRED = 160;
+const PASS_MAX_DESIRED = 620;
+const PASS_FLIGHT_MIN = 26;
+const PASS_FLIGHT_MAX = 46;
+const PASS_HEIGHT_MIN = 46;
+const PASS_HEIGHT_MAX = 104;
+
+const PUNT_FLIGHT_FRAMES = 42;
+const PUNT_HEIGHT = 130;
+
+// Air travel feel (consistent + readable)
+const CHIP_AIR_SPEED = 4.8;         // world units per frame
+const PASS_AIR_SPEED = 3.6;         // slower so passes don't teleport
+const HANDBALL_AIR_SPEED = 6.6;
+
+const CHIP_FRAMES_MIN = 22;         // never instant
+const CHIP_FRAMES_MAX = 70;
+const PASS_FRAMES_MIN = 44;
+const PASS_FRAMES_MAX = 140;
+const HANDBALL_FRAMES_MIN = 18;
+const HANDBALL_FRAMES_MAX = 48;
+
+// Contest / Mark
+const CONTEST_RADIUS = 95; // bigger so contested marks actually happen
+const CONTEST_STOP_FRAMES = 95;
+
+// Mark + play-on rules (AFL-ish)
+const METRE = 9; // based on FIFTY_METRE=450
+const MARK_MIN_KICK_DIST = 15 * METRE;
+const MARK_PROTECT_FRAMES = 5 * 60; // 5 seconds @ 60fps
+const MARK_STANDOFF_DIST = 92;
+const MARK_PLAYON_FWD = 0.5;        // ANY step toward ATTACKING goal = play on
+const MARK_BACK_ALLOW = 120;        // can retreat upfield before play on
+
+// (Jumping/slow-mo contests disabled for now)
+
+// Quarters / Game clock
+// v69: real-game style clock (20:00) with stoppage time (clock stops on marks/stoppages),
+// but accelerated so quarters run much faster in real time (2x faster than before).
+const QUARTER_LENGTH_GAME_SECS = 20 * 60; // 20:00 per quarter
+// v70: +30% faster again
+const GAME_CLOCK_SPEED_MULT = 8 * 1.30; // 20:00 runs out in ~1.92 real minutes while clock is running
+
+// v70: teams switch ends each quarter (Sloths/Dropbears attack directions swap)
+let slothsAttackDir = -1; // Q1: Sloths attack LEFT, Dropbears attack RIGHT
+function getAttackDir(team){
+  return (team === 'sloths') ? slothsAttackDir : -slothsAttackDir;
+}
+function getGoalXForTeam(team){
+  return (getAttackDir(team) === -1) ? LEFT_GOAL_X : RIGHT_GOAL_X;
+}
+function getEndSideForTeam(team){
+  return (getAttackDir(team) === -1) ? 'left' : 'right';
+}
+
+// Jumping
+const JUMP_TOTAL_FRAMES = 84;   // slow, floaty hang time
+const JUMP_HEIGHT_PX = 92;      // big leap so timing matters
+const AI_JUMP_RANGE = 78;
+const AI_JUMP_CHANCE_TARGET = 0.12;
+const AI_JUMP_CHANCE_DEF = 0.08;
+
+// Marking
+const MARK_CATCH_RADIUS = 72;
+const OPEN_MARK_NO_JUMP = true;
+
+// Landing catch ("mark") radius: must actually be under it
+// v29: slightly larger so "under the circle" consistently marks
+const LANDING_CATCH_RADIUS = 44;
+
+// v33: drop-zone circle sizing (must match `drawLandingMarker`)
+const DROPZONE_MIN_R = 18;
+const DROPZONE_MAX_R = 52;
+
+// Flight arc shape: >1 drops faster (less floaty hang)
+const FLIGHT_HEIGHT_SHAPE = 1.35;
+
+// Bounce after no-mark landing
+const BOUNCE_HEIGHT = 7;
+const GROUND_HEIGHT_DECAY_MULT = 7;
+
+// After any kick/handball lands, briefly lock pickups so players don't "vacuum" it instantly.
+const GATHER_LOCK_FRAMES = 10;
+
+// Posts
+const GOAL_POST_GAP = 120;
+const BEHIND_GAP = 330;
+const GOAL_Y_TOP = 310;
+const GOAL_Y_BOT = 400;
+const BEHIND_Y_TOP = 250;
+const BEHIND_Y_BOT = 460;
+
+// Separation so players don't fuse
+const SEPARATION_DIST = 18;
+const SEPARATION_PUSH = 0.085;
+
+// Control switching
+const CONTROL_SWITCH_COOLDOWN = 22;
+
+// Formation discipline
+const ACTION_RADIUS = 260;
+const MAX_LEAVE_HOME_BACK = 420;
+const MAX_LEAVE_HOME_MID  = 650;
+const MAX_LEAVE_HOME_FWD  = 540;
+
+// ===================
+// GAME STATE
+// ===================
+let cameraX = 400;
+let cameraY = 200;
+let gameState = 'playing'; // playing | goalkick | goalkick_flight | markstop | quarterbreak | fulltime
+let isPaused = false; // v101: ESC toggles pause
+
+let messageText = '';
+let messageTimer = 0;
+
+let kickoffLockFrames = START_UNTACKLE_FRAMES;
+// v102: separate kick-in grace (behind/on-the-full) from centre-bounce safety lock
+let kickInGraceFrames = 0;
+
+// After a score, pause briefly before resetting to centre
+let pendingReset = null; // { type, teamToStart }
+let scorePauseFrames = 0;
+
+// Goal Umpire Animation
+// v60: 2x speed for the whole scoring sequence, fixed 60fps timing
+const UMPIRE_DISPLAY_FRAMES = 150; // 2.5 seconds at 60fps (animation timing)
+const SCORE_RESET_PAUSE_FRAMES = 150; // 2.5 seconds at 60fps (match animation)
+let umpireDisplayFrames = 0;
+let umpireSignalType = null; // 'goal' or 'behind'
+let umpireSoundPlayed = false; // v72: play crowd sound when arms raise (2nd phase)
+
+// Kick charging
+let kickCharging = false;
+let kickChargeFrames = 0;
+
+// Mark stop state
+let markStopFrames = 0;
+let markX = 0;
+let markCarrier = null;
+// v26: prevent instant play-on from held movement input
+let markLockFrames = 0;
+const MARK_LOCK_FRAMES = 12;
+// v31: stable per-flight jitter id for AI aerial positioning
+let airChaseIdCounter = 1;
+let nextQuarter = 2;
+
+// Input (edge detection)
+const keys = {};
+const justPressed = {};
+window.addEventListener('keydown', e => {
+  if (e.code === 'Escape'){
+    isPaused = !isPaused;
+    // Prevent "stuck keys" when resuming
+    if (isPaused){
+      keys['ArrowUp'] = false; keys['ArrowDown'] = false; keys['ArrowLeft'] = false; keys['ArrowRight'] = false;
+      keys['Space'] = false; keys['KeyX'] = false;
+      justPressed['ArrowUp'] = false; justPressed['ArrowDown'] = false; justPressed['ArrowLeft'] = false; justPressed['ArrowRight'] = false;
+      justPressed['Space'] = false; justPressed['KeyX'] = false;
+    }
+    e.preventDefault();
+    return;
+  }
+  if (!keys[e.code]) { justPressed[e.code] = true; keys[e.code] = true; }
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space','KeyX'].includes(e.code)) e.preventDefault();
+
+  if (e.code === 'Space') {
+    if (gameState === 'fulltime') return;
+    if (gameState === 'quarterbreak'){
+      startNextQuarter();
+      return;
+    }
+
+    // Jumping disabled for now.
+
+    const p = getControlledPlayer();
+    if (!p) return;
+
+    // Attacking: only the ball carrier uses Space for kicks/meters.
+    if (!p.hasBall) return;
+
+    // Goal shot meter inside 50
+    if ((gameState === 'playing' || gameState === 'markstop') && isInPlayerGoalRange(p)) {
+      enterGoalKick(p, false);
+      return;
+    }
+
+    if ((gameState === 'playing' || gameState === 'markstop') && !kickCharging) {
+      // v33: after a mark, with no direction pressed, default to kicking straight ahead.
+      if (gameState === 'markstop' &&
+          !keys['ArrowLeft'] && !keys['ArrowRight'] && !keys['ArrowUp'] && !keys['ArrowDown']){
+        p.aimX = getAttackDir(p.team);
+        p.aimY = 0;
+      }
+      kickCharging = true;
+      kickChargeFrames = 0;
+    }
+  }
+});
+
+window.addEventListener('keyup', e => {
+  keys[e.code] = false;
+
+  if (e.code === 'Space') {
+    if (gameState === 'goalkick') return;
+
+    // If we were charging a kick, releasing Space kicks.
+    if (kickCharging) {
+      kickCharging = false;
+      performChargedKick();
+    }
+  }
+});
+
+// Ball
+const ball = {
+  x: OVAL_CX,
+  y: OVAL_CY,
+  vx: 0,
+  vy: 0,
+  height: 0,
+  prevHeight: 0,
+  free: false,
+  lastKickedBy: null,
+  kickType: null, // 'chip' | 'pass' | 'punt' | 'handball'
+
+  // Guided flight for chip + pass: we treat these as "targeted"
+  flightFramesLeft: 0,
+  flightTotalFrames: 0,
+  flightMaxHeight: 0,
+  flightFromX: OVAL_CX,
+  flightFromY: OVAL_CY,
+  flightToX: OVAL_CX,
+  flightToY: OVAL_CY,
+  flightT: 0,            // 0..1 progress along the flight path
+  flightTimeScale: 1,    // smoothly approaches contest slowmo
+  intendedTarget: null,
+
+  // For mark rules
+  kickStartX: OVAL_CX,
+  kickStartY: OVAL_CY,
+
+  // Soft auto-catch for chips/handballs (uncontested convenience)
+  softCatchTarget: null,
+  softCatchFramesLeft: 0,
+
+  // Prevent instant "vacuum" pickups right as it lands
+  gatherLockFrames: 0,
+
+  // v25: landing marker sizing for long kicks
+  landingMarkerStartHeight: 0,
+
+  // v31: identifies the current in-air "episode" for jitter + control switching
+  airChaseId: 0,
+
+  // v34: chosen interceptor to prevent control jitter
+  chosenSlothsInterceptorName: null,
+  airChaseFrames: 0,
+
+  // v100: goal shot (golf meter) result should match what player selected
+  goalkickPlannedResult: null // 'goal' | 'behind' | 'onfull'
+};
+
+// Contest state for markable kicks
+const contest = {
+  active: false,
+  target: null,
+  defender: null,
+  kickerTeam: null
+};
+
+// ===================
+// TEAM SETUP (18 a side)
+// ===================
+// v61: Player system (names + stats)
+const PLAYER_STATS_KEYS = ['SPEED','TACKLE','GOAL_KICK','LONG_KICK','HANDPASS','MARKING'];
+const PLAYER_STATS_DEFAULT = Object.freeze({
+  SPEED: 80,
+  TACKLE: 80,
+  GOAL_KICK: 80,
+  LONG_KICK: 80,
+  HANDPASS: 80,
+  MARKING: 80
+});
+
+function clamp01(v){ return Math.max(0, Math.min(1, v)); }
+
+function hashString32(s){
+  // FNV-1a 32-bit
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++){
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+function seededRand01(seed){
+  // simple LCG
+  let x = seed >>> 0;
+  x = (Math.imul(1664525, x) + 1013904223) >>> 0;
+  return (x >>> 0) / 4294967296;
+}
+
+function genPlayerStats(name){
+  // v70: more variance with clearer strengths/weaknesses (still no "bad at everything").
+  // Deterministic per name so it stays stable.
+  const baseSeed = hashString32(name);
+  const stats = {};
+
+  // Choose an ordering of stats to assign roles (strength/avg/weak) without repeating.
+  const keys = [...PLAYER_STATS_KEYS];
+  for (let i = keys.length - 1; i > 0; i--){
+    const r = seededRand01(baseSeed ^ (i * 0x9e3779b9));
+    const j = Math.floor(r * (i + 1));
+    const tmp = keys[i]; keys[i] = keys[j]; keys[j] = tmp;
+  }
+
+  // Two strong, two average, two weak (but not awful); ranges are inclusive-ish.
+  const buckets = [
+    { n: 2, lo: 88, hi: 100 }, // strengths
+    { n: 2, lo: 56, hi: 86 },  // solid/role-player
+    { n: 2, lo: 28, hi: 66 }   // weaknesses
+  ];
+
+  let idx = 0;
+  for (const b of buckets){
+    for (let k = 0; k < b.n; k++){
+      const key = keys[idx++];
+      const r = seededRand01(baseSeed ^ hashString32(key));
+      stats[key] = b.lo + Math.floor(r * ((b.hi - b.lo) + 1));
+    }
+  }
+
+  // Safety: ensure at least one standout and no one is "hopeless overall".
+  const vals = Object.values(stats);
+  const maxV = Math.max(...vals);
+  const avgV = vals.reduce((a,b)=>a+b,0) / Math.max(1, vals.length);
+  if (maxV < 92){
+    // bump the first key to be a standout
+    const k0 = keys[0];
+    stats[k0] = Math.max(stats[k0], 92);
+  }
+  if (avgV < 56){
+    // lift the two weakest a bit
+    const sortedKeys = Object.keys(stats).sort((a,b)=>stats[a]-stats[b]);
+    stats[sortedKeys[0]] = Math.min(100, stats[sortedKeys[0]] + 8);
+    stats[sortedKeys[1]] = Math.min(100, stats[sortedKeys[1]] + 6);
+  }
+
+  return stats;
+}
+
+function getStat(p, key){
+  const v = p?.stats?.[key];
+  if (Number.isFinite(v)) return Math.max(0, Math.min(100, v));
+  return PLAYER_STATS_DEFAULT[key] ?? 80;
+}
+
+function playerSpeedFactor(p){
+  // Map SPEED 0..100 to ~0.85..1.25 (but with our 70-90 band ~1.20..1.30? keep modest)
+  const s = getStat(p, 'SPEED');
+  // v70: stronger stat impact
+  return 0.70 + (s / 100) * 0.60; // 0.70..1.30
+}
+
+function handpassMaxDist(p){
+  const s = getStat(p, 'HANDPASS');
+  return MAX_HANDBALL_DIST * (0.70 + (s / 100) * 0.60); // ~0.7..1.3x
+}
+
+function longKickMult(p){
+  const s = getStat(p, 'LONG_KICK');
+  return 0.75 + (s / 100) * 0.60; // 0.75..1.35
+}
+
+function goalKickMeterMult(p){
+  // High GOAL_KICK => slower meter; low => faster.
+  const s = getStat(p, 'GOAL_KICK');
+  // v70: stronger stat impact
+  return Math.max(0.55, Math.min(1.70, 1.70 - (s / 100) * 1.15));
+}
+
+function tackleSuccessChance(attacker, isPlayerAction){
+  const t = getStat(attacker, 'TACKLE') / 100;
+  // v70: stronger stat impact (great tacklers feel great; weak tacklers whiff more)
+  const base = isPlayerAction ? 0.40 : 0.22;
+  const span = isPlayerAction ? 0.60 : 0.60;
+  return Math.max(0.05, Math.min(0.95, base + t * span));
+}
+
+function getAllPlayerNames36(){
+  // 36 unique placeholder AFL-ish names (initial + surname)
+  return [
+    'D Rogers','J Sharpe','M Keane','A Fulton','T McBride','S Nolan','C Henson','L Parry','B Sutton',
+    'R Walsh','K Devlin','P Monroe','H Carver','E Donnelly','G Barrett','I Caldwell','N Fraser','V Oates',
+    'O Sinclair','W Bennett','F Hargreaves','U Price','Q Jamison','Y Mercer','Z Carlisle','X Dwyer','J Morrow',
+    'D Whittaker','A Pritchard','S Ellison','C Rowe','L Matheson','B Hawthorne','R Gallagher','K Ritchie','P Vaughan'
+  ];
+}
+
+function buildTeam(team, attackDir){
+  const roles = [
+    { rx:-860, ry:-190, band:'back' }, { rx:-860, ry:0, band:'back' }, { rx:-860, ry:190, band:'back' },
+    { rx:-560, ry:-240, band:'back' }, { rx:-560, ry:0, band:'back' }, { rx:-560, ry:240, band:'back' },
+    { rx:-230, ry:-320, band:'mid' }, { rx:-230, ry:320, band:'mid' }, { rx:-120, ry:0, band:'mid' },
+    { rx:240, ry:-240, band:'fwd' }, { rx:240, ry:0, band:'fwd' }, { rx:240, ry:240, band:'fwd' },
+    { rx:560, ry:-185, band:'fwd' }, { rx:560, ry:0, band:'fwd' }, { rx:560, ry:185, band:'fwd' },
+    { rx:-40, ry:-90, band:'ruck' }, { rx:-40, ry:90, band:'ruck' }, { rx:-20, ry:0, band:'ruck' }
+  ];
+
+  const flip = attackDir;
+  const out = [];
+  for (let i=0;i<roles.length;i++){
+    const r = roles[i];
+    const wx = OVAL_CX + (r.rx * flip);
+    const wy = OVAL_CY + r.ry;
+    out.push({
+      x: wx, y: wy,
+      homeX: wx, homeY: wy,
+      roamX: wx, roamY: wy,
+      roamTimer: 0,
+      team,
+      band: r.band,
+      hasBall:false,
+      controlled:false,
+      tackleCooldown:0,
+      possessFrames:0,
+      pressureFrames:0,
+      airChaseId: 0,
+      airOffX: 0,
+      airOffY: 0,
+      airWanderTimer: 0,
+      noPickupFrames:0,
+      name:`${team}-${i+1}`,
+      number: i + 1,
+      stats: null, // assigned in rebuildPlayers()
+
+      // Aim defaults
+      aimX: attackDir,
+      aimY: 0,
+
+      // Jumping
+      jumpFrames: 0,
+      jumpT: 0
+    });
+  }
+  return out;
+}
+
+let allPlayers = [];
+function rebuildPlayers(){
+  const sloths = buildTeam('sloths', getAttackDir('sloths'));
+  const dropbears = buildTeam('dropbears', getAttackDir('dropbears'));
+
+  // v61: assign unique placeholder names + stats for all 36 players
+  const names = getAllPlayerNames36();
+  const everyone = [...sloths, ...dropbears];
+  for (let i = 0; i < everyone.length; i++){
+    const p = everyone[i];
+    p.name = names[i] ?? `${p.team}-${i+1}`;
+    p.stats = genPlayerStats(p.name);
+  }
+
+  // v62: demo superstars
+  // Our team: E Donnelly = 100 in everything
+  const don = everyone.find(p => p.team === 'sloths' && p.name === 'E Donnelly');
+  if (don){
+    don.stats = { SPEED:100, TACKLE:100, GOAL_KICK:100, LONG_KICK:100, HANDPASS:100, MARKING:100 };
+  }
+  // Their team: pick a forward and make them 100 in everything
+  const eliteBearFwd = everyone.find(p => p.team === 'dropbears' && p.band === 'fwd');
+  if (eliteBearFwd){
+    eliteBearFwd.stats = { SPEED:100, TACKLE:100, GOAL_KICK:100, LONG_KICK:100, HANDPASS:100, MARKING:100 };
+  }
+
+  allPlayers = [...sloths, ...dropbears];
+  allPlayers.forEach(p => p.controlled=false);
+  sloths[0].controlled=true;
+}
+
+// Score
+const score = { sloths:{g:0,b:0}, dropbears:{g:0,b:0} };
+
+// Quarter
+let quarter = 1;
+let quarterTime = QUARTER_LENGTH_GAME_SECS; // in "game seconds" (accelerated vs real time)
+
+// ===================
+// HELPERS
+// ===================
+function worldToScreenX(x){ return x - cameraX; }
+function worldToScreenY(y){ return y - cameraY; }
+
+function getScale(y){
+  const t = (y - (OVAL_CY - OVAL_B)) / (OVAL_B * 2);
+  return 0.55 + Math.max(0, Math.min(1, t)) * 0.45;
+}
+
+function showMessage(msg){
+  messageText = msg;
+  messageTimer = 90;
+}
+
+function showUmpireSignal(type){
+  umpireSignalType = type;
+  umpireDisplayFrames = UMPIRE_DISPLAY_FRAMES;
+  umpireSoundPlayed = false;
+}
+
+// v69: during score pauses, keep the ball moving into the crowd (no clamping, no catches)
+function advanceBallDuringScorePause(){
+  if (!ball.free) return;
+
+  if (ball.gatherLockFrames > 0) ball.gatherLockFrames--;
+
+  const isArcedFlight =
+    (ball.kickType === 'pass' || ball.kickType === 'chip' || ball.kickType === 'handball' || ball.kickType === 'punt' || ball.kickType === 'throwin' || ball.kickType === 'goalkick') &&
+    ball.flightFramesLeft > 0 &&
+    (ball.flightTotalFrames > 0);
+
+  ball.prevHeight = ball.height;
+  if (isArcedFlight){
+    const total = Math.max(1, ball.flightTotalFrames);
+    const dt = 1 / total;
+    ball.flightT = clamp(ball.flightT + dt, 0, 1);
+
+    ball.x = ball.flightFromX + (ball.flightToX - ball.flightFromX) * ball.flightT;
+    ball.y = ball.flightFromY + (ball.flightToY - ball.flightFromY) * ball.flightT;
+    const s = Math.max(0, Math.sin(Math.PI * ball.flightT));
+    ball.height = ball.flightMaxHeight * Math.pow(s, FLIGHT_HEIGHT_SHAPE);
+
+    // keep framesLeft in sync for any code that reads it
+    ball.flightFramesLeft = (1 - ball.flightT) * total;
+
+    if (ball.flightFramesLeft <= 0){
+      // v96: don't make the ball feel like it's made of lead.
+      // Let fast chip/pass kicks skid/bounce along the deck a bit if nobody marked it.
+      if (ball.kickType === 'handball' || ball.kickType === 'goalkick'){
+        ball.vx = 0;
+        ball.vy = 0;
+      } else if (ball.kickType === 'chip' || ball.kickType === 'pass'){
+        const sp = Math.hypot(ball.vx, ball.vy);
+        if (sp > 2.2){
+          ball.vx *= 0.65;
+          ball.vy *= 0.65;
+        } else {
+          ball.vx = 0;
+          ball.vy = 0;
+        }
+      } else {
+        // Punt (or other): keep a little momentum
+        ball.vx *= 0.30;
+        ball.vy *= 0.30;
+      }
+      ball.gatherLockFrames = GATHER_LOCK_FRAMES;
+
+      // Bounce if nobody marked it (short + quick settle).
+      ball.height = BOUNCE_HEIGHT;
+      playSound('bounce');
+      ball.flightTotalFrames = 0;
+      ball.flightMaxHeight = 0;
+      ball.flightT = 0;
+      ball.flightTimeScale = 1;
+    }
+  } else {
+    ball.x += ball.vx; ball.y += ball.vy;
+
+    const onGround = (ball.height <= 0.01 && ball.flightFramesLeft <= 0);
+    if (ball.kickType === 'punt' || onGround){
+      ball.vx *= BALL_FRICTION; ball.vy *= BALL_FRICTION;
+    }
+
+    if (ball.height > 0){
+      const mult = (ball.flightTotalFrames <= 0) ? GROUND_HEIGHT_DECAY_MULT : 1;
+      ball.height = Math.max(0, ball.height - BALL_HEIGHT_DECAY * mult);
+    }
+  }
+}
+
+function beginScorePause(type, teamToStart, scoringEndSide=null, scoredY=null){
+  pendingReset = { type, teamToStart, scoringEndSide, scoredY };
+  // v56: don't speed up the animation — only shorten the gameplay freeze.
+  scorePauseFrames = (type === 'goal' || type === 'behind') ? SCORE_RESET_PAUSE_FRAMES : 60;
+}
+
+function endQuarterNow(){
+  quarterTime = 0;
+  if (quarter >= 4){
+    gameState = 'fulltime';
+    showMessage('FULL TIME!');
+    playSound('whistle');
+    return;
+  }
+  gameState = 'quarterbreak';
+  nextQuarter = quarter + 1;
+  showMessage('QUARTER TIME');
+  playSound('whistle');
+}
+
+function startNextQuarter(){
+  quarter = nextQuarter;
+  quarterTime = QUARTER_LENGTH_GAME_SECS;
+  // v70: swap ends each quarter
+  slothsAttackDir *= -1;
+  resetPositionsStart();
+  gameState = 'playing';
+  playSound('quarterstart');
+  showMessage(`QUARTER ${quarter}`);
+}
+
+function getControlledPlayer(){
+  return allPlayers.find(p => p.controlled);
+}
+
+let controlSwitchCooldown = 0;
+function switchControlTo(p){
+  if (!p) return;
+  allPlayers.forEach(pl => pl.controlled=false);
+  p.controlled=true;
+  controlSwitchCooldown = CONTROL_SWITCH_COOLDOWN;
+}
+
+function safeUnit(dx, dy){
+  const d = Math.hypot(dx, dy);
+  if (!Number.isFinite(d) || d < 0.001){
+    const a = Math.random()*Math.PI*2;
+    return { ux: Math.cos(a), uy: Math.sin(a) };
+  }
+  return { ux: dx/d, uy: dy/d };
+}
+
+function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
+
+function isKickInAir(){
+  return (
+    ball.free &&
+    (ball.kickType === 'pass' || ball.kickType === 'chip' || ball.kickType === 'punt' || ball.kickType === 'throwin') &&
+    ((ball.flightTotalFrames > 0 && ball.flightT < 1) || (ball.height > 6))
+  );
+}
+
+function dropZoneT(){
+  // 1 = just kicked (big circle), 0 = landing (small circle)
+  if (ball.flightTotalFrames > 0 && ball.flightT < 1){
+    return clamp(1 - ball.flightT, 0, 1);
+  }
+  const denom = Math.max(1, ball.landingMarkerStartHeight || ball.height);
+  return clamp(ball.height / denom, 0, 1);
+}
+
+function predictDropZoneCenter(){
+  let pt;
+  if (ball.flightTotalFrames > 0 && ball.flightT < 1){
+    pt = { x: ball.flightToX, y: ball.flightToY };
+  } else {
+    // Legacy punts apply friction each frame while airborne.
+    const decay = BALL_HEIGHT_DECAY * GROUND_HEIGHT_DECAY_MULT;
+    const frames = Math.max(1, Math.floor(ball.height / Math.max(0.001, decay)));
+    const fr = BALL_FRICTION;
+    const sum = (1 - Math.pow(fr, frames)) / Math.max(0.0001, (1 - fr));
+    pt = { x: ball.x + ball.vx * sum, y: ball.y + ball.vy * sum };
+  }
+  clampToOval(pt);
+  return pt;
+}
+
+function dropZoneRadiusAt(y){
+  const t = dropZoneT();
+  return (DROPZONE_MIN_R + (DROPZONE_MAX_R - DROPZONE_MIN_R) * t) * getScale(y);
+}
+
+function countPlayersWithin(team, x, y, r){
+  let n = 0;
+  const rr = r*r;
+  for (const p of allPlayers){
+    if (team && p.team !== team) continue;
+    const dx = p.x - x;
+    const dy = p.y - y;
+    if ((dx*dx + dy*dy) <= rr) n++;
+  }
+  return n;
+}
+
+function planFlightFrames(dist, speedPerFrame, minFrames, maxFrames){
+  const frames = Math.ceil(dist / Math.max(0.001, speedPerFrame));
+  return clamp(frames, minFrames, maxFrames);
+}
+
+function startTargetedFlight(toX, toY, frames, maxHeight){
+  const f = Math.max(1, Math.floor(frames));
+  // v39: new aerial episode; reset interceptor lock
+  ball.airChaseId = airChaseIdCounter++;
+  ball.chosenSlothsInterceptorName = null;
+  ball.airChaseFrames = 0;
+  ball.flightFramesLeft = f;
+  ball.flightTotalFrames = f;
+  ball.flightMaxHeight = Math.max(0, maxHeight);
+  ball.height = 0;
+  ball.prevHeight = 0;
+  ball.gatherLockFrames = 0;
+  ball.flightFromX = ball.x;
+  ball.flightFromY = ball.y;
+  ball.flightToX = toX;
+  ball.flightToY = toY;
+  ball.flightT = 0;
+  ball.flightTimeScale = 1;
+  // keep vx/vy for legacy code (drop estimates, etc.)
+  ball.vx = (toX - ball.x) / f;
+  ball.vy = (toY - ball.y) / f;
+}
+
+function findPlayerUnderBall(){
+  // v61: marking stat slightly biases who wins a close contest.
+  let best = null;
+  let bestScore = Infinity;
+  for (const p of allPlayers){
+    const d = Math.hypot(ball.x - p.x, ball.y - p.y);
+    const markBonus = getStat(p, 'MARKING') * 0.12; // ~8-12 units advantage
+    const score = d - markBonus;
+    if (score < bestScore){
+      bestScore = score;
+      best = p;
+    }
+  }
+  const dist = best ? Math.hypot(ball.x - best.x, ball.y - best.y) : Infinity;
+  return { best, dist };
+}
+
+function tryResolveCatchOnLanding(){
+  if (!ball.free) return false;
+  if (!(ball.kickType === 'pass' || ball.kickType === 'chip' || ball.kickType === 'punt' || ball.kickType === 'handball')) return false;
+  if (ball.flightTotalFrames <= 0) return false;
+  if (ball.flightT < 0.995) return false;
+
+  // Handball should ALWAYS complete to its intended target if it was possible.
+  if (ball.kickType === 'handball' && ball.intendedTarget){
+    resolveCatch(ball.intendedTarget);
+  } else {
+    const { best, dist } = findPlayerUnderBall();
+    if (!best) return false;
+
+    // v45: Option B — Award restriction for Sloths kicks.
+    // If Sloths kicked it, only the CONTROLLED Sloths player can be awarded the mark.
+    // This prevents the “AI teammate runs under it and marks it” loop.
+    const isSlothsKick = (ball.lastKickedBy === 'sloths');
+    if (isSlothsKick && best.team === 'sloths' && !best.controlled){
+      return false;
+    }
+
+    // v33: mark only counts if you're roughly in the drop-zone circle;
+    // otherwise it should hit the deck and bounce/roll.
+    const kickDist = Math.hypot(ball.flightToX - ball.flightFromX, ball.flightToY - ball.flightFromY);
+    const isMarkableKick = (ball.kickType === 'pass' || ball.kickType === 'chip' || ball.kickType === 'punt') && kickDist >= MARK_MIN_KICK_DIST;
+    if (isMarkableKick){
+      const pt = predictDropZoneCenter();
+      const r = dropZoneRadiusAt(pt.y);
+      const dDrop = Math.hypot(best.x - pt.x, best.y - pt.y);
+      const markExtra = Math.max(0, (getStat(best, 'MARKING') - 70) * 0.60);
+      if (dDrop > (r + markExtra)) return false;
+      resolveCatch(best);
+    } else {
+      // If nobody is anywhere near it, let it hit the deck.
+      if (dist > LANDING_CATCH_RADIUS) return false;
+      resolveCatch(best);
+    }
+  }
+
+  ball.free = false;
+  ball.flightFramesLeft = 0;
+  ball.flightTotalFrames = 0;
+  ball.flightMaxHeight = 0;
+  ball.height = 0;
+  ball.prevHeight = 0;
+  ball.intendedTarget = null;
+  return true;
+}
+
+function sanitizeBall(){
+  if (![ball.x, ball.y, ball.vx, ball.vy, ball.height].every(Number.isFinite)){
+    ball.x = OVAL_CX; ball.y = OVAL_CY;
+    ball.vx = 0; ball.vy = 0; ball.height = 0;
+    ball.prevHeight = 0;
+    ball.free = true;
+    ball.lastKickedBy = null;
+    ball.kickType = null;
+    ball.flightFramesLeft = 0;
+    ball.flightTotalFrames = 0;
+    ball.flightMaxHeight = 0;
+    ball.intendedTarget = null;
+    ball.softCatchTarget = null;
+    ball.softCatchFramesLeft = 0;
+    ball.gatherLockFrames = 0;
+    ball.landingMarkerStartHeight = 0;
+    ball.kickStartX = OVAL_CX;
+    ball.kickStartY = OVAL_CY;
+    ball.goalkickPlannedResult = null;
+    contest.active = false;
+    contest.target = null;
+    contest.defender = null;
+    contest.kickerTeam = null;
+  }
+}
+
+function clearPossession(){
+  allPlayers.forEach(p => { p.hasBall=false; p.possessFrames=0; });
+}
+
+function attachBallToCarrier(p){
+  // v75: carry side should match original Q1 behavior:
+  // - Sloths attack LEFT in Q1 -> ball on left (-x)
+  // - Dropbears attack RIGHT in Q1 -> ball on right (+x)
+  // When teams swap ends, attack direction flips, so this stays correct in Q2+.
+  const side = getAttackDir(p.team) * 10;
+  ball.x = p.x + side;
+  ball.y = p.y;
+  // v98: ensure the carry offset never puts the ball outside the oval
+  // (fixes kick-ins in pockets immediately becoming "on the full")
+  clampToOval(ball);
+  ball.vx = 0;
+  ball.vy = 0;
+  ball.height = Math.min(ball.height, 2);
+  ball.prevHeight = ball.height;
+  ball.free = false;
+
+  // If you are holding it, any previous in-flight logic is cancelled.
+  ball.flightFramesLeft = 0;
+  ball.flightTotalFrames = 0;
+  ball.flightMaxHeight = 0;
+  ball.intendedTarget = null;
+  ball.softCatchTarget = null;
+  ball.softCatchFramesLeft = 0;
+  ball.gatherLockFrames = 0;
+  ball.landingMarkerStartHeight = 0;
+  ball.kickStartX = p.x;
+  ball.kickStartY = p.y;
+  ball.kickType = null;
+  endContest();
+}
+
+function giveBallTo(p){
+  clearPossession();
+  p.hasBall = true;
+  p.possessFrames = 0;
+  p.noPickupFrames = NO_RECLAIM_FRAMES;
+  attachBallToCarrier(p);
+}
+
+function endContest(){
+  contest.active = false;
+  contest.target = null;
+  contest.defender = null;
+  contest.kickerTeam = null;
+}
+
+function isInPlayerGoalRange(p){
+  if (!p) return false;
+  const gx = getGoalXForTeam(p.team);
+  return Math.abs(p.x - gx) <= FIFTY_METRE;
+}
+
+function nearestPlayer(team, x, y){
+  let best=null, bestD=Infinity;
+  for (const p of allPlayers){
+    if (team && p.team !== team) continue;
+    const d = Math.hypot(p.x - x, p.y - y);
+    if (d < bestD){ bestD=d; best=p; }
+  }
+  return { best, dist: bestD };
+}
+
+// Short directional teammate for handball/chip
+function findNearestTeammateInDirection(from, maxDist, aimX, aimY, minDot){
+  const aim = safeUnit(aimX, aimY);
+  let best=null, bestDist=Infinity;
+  for (const p of allPlayers){
+    if (p.team !== from.team || p === from) continue;
+    const dx = p.x - from.x;
+    const dy = p.y - from.y;
+    const d = Math.hypot(dx, dy);
+    if (Number.isFinite(maxDist) && d > maxDist) continue;
+    const u = safeUnit(dx, dy);
+    const dot = u.ux*aim.ux + u.uy*aim.uy;
+    if (dot < minDot) continue;
+    if (d < bestDist){ bestDist=d; best=p; }
+  }
+  return best;
+}
+
+function findNearestTeammateAimed(from, aimX, aimY){
+  // Tap-kick target: nearest teammate in a fairly wide cone in front.
+  // Use an infinite maxDist so we don't "skip" the nearest due to an arbitrary cap.
+  return findNearestTeammateInDirection(from, Infinity, aimX, aimY, 0.12);
+}
+
+// Pass target: match direction + desired distance
+function findTeammateForPassKick(from, desiredDist, aimX, aimY){
+  const aim = safeUnit(aimX, aimY);
+  const maxDist = desiredDist + 220; // prevents low-charge kicks selecting absurd downfield targets
+  let best=null, bestScore=Infinity;
+  for (const p of allPlayers){
+    if (p.team !== from.team || p === from) continue;
+    const dx = p.x - from.x;
+    const dy = p.y - from.y;
+    const d = Math.hypot(dx, dy);
+    if (d > maxDist) continue;
+    const u = safeUnit(dx, dy);
+    const dot = u.ux*aim.ux + u.uy*aim.uy;
+    if (dot < 0.35) continue;
+
+    const distPenalty = Math.abs(d - desiredDist);
+    const dirPenalty = (1 - dot) * 260;
+    const score = distPenalty + dirPenalty;
+    if (score < bestScore){ bestScore=score; best=p; }
+  }
+  return best;
+}
+
+function predictLandingSpot(x,y,vx,vy,height){
+  const frames = Math.max(1, Math.floor(height / BALL_HEIGHT_DECAY));
+  return { lx: x + vx*frames, ly: y + vy*frames };
+}
+
+function dropbearsInRange(x){ return Math.abs(x - getGoalXForTeam('dropbears')) <= FIFTY_METRE; }
+
+// Jumping
+function startJump(p){
+  if (p.jumpFrames > 0) return;
+  p.jumpFrames = JUMP_TOTAL_FRAMES;
+  p.jumpT = 0;
+}
+function jumpLiftNorm(p){
+  if (p.jumpFrames <= 0) return 0;
+  const t = p.jumpT;
+  // Big, floaty jump with a short hang at the top.
+  const tt = Math.max(0, Math.min(1, t));
+  if (tt < 0.38){
+    const u = tt / 0.38;
+    return Math.sin((u * Math.PI) / 2); // ease up
+  }
+  if (tt < 0.62){
+    return 1; // hang time
+  }
+  const u = (tt - 0.62) / 0.38;
+  return Math.cos((u * Math.PI) / 2); // ease down
+}
+
+function playerReachHeight(p){
+  // Rough "hands reach" height for marking; ties jump timing to catches.
+  return 18 + jumpLiftNorm(p) * JUMP_HEIGHT_PX;
+}
+
+// ===================
+// OVAL BOUNDARY (SUPERELLIPSE)
+// ===================
+function superYRangeAtX(x){
+  const nx = Math.abs((x - OVAL_CX) / OVAL_A);
+  const inner = 1 - Math.pow(nx, OVAL_N);
+  const half = (inner > 0) ? (OVAL_B * Math.pow(inner, 1 / OVAL_N)) : 0;
+  return { yMin: OVAL_CY - half, yMax: OVAL_CY + half };
+}
+
+function isInsideOval(x, y){
+  const nx = Math.abs((x - OVAL_CX) / OVAL_A);
+  const ny = Math.abs((y - OVAL_CY) / OVAL_B);
+  return (Math.pow(nx, OVAL_N) + Math.pow(ny, OVAL_N)) <= 1.0;
+}
+
+function boundaryPointAlongSegment(x0, y0, x1, y1){
+  // x0,y0 assumed inside; x1,y1 may be outside. Binary search boundary.
+  let lo = 0, hi = 1;
+  for (let i=0;i<22;i++){
+    const mid = (lo + hi) * 0.5;
+    const x = x0 + (x1 - x0) * mid;
+    const y = y0 + (y1 - y0) * mid;
+    if (isInsideOval(x, y)) lo = mid;
+    else hi = mid;
+  }
+  return { x: x0 + (x1 - x0) * lo, y: y0 + (y1 - y0) * lo };
+}
+
+function handleGoalLineCrossing(prevX, prevY){
+  // Check crossing BEFORE boundary/out handling so goals/behinds render correctly.
+  const yAtX = (xLine) => {
+    const denom = (ball.x - prevX);
+    if (Math.abs(denom) < 0.0001) return ball.y;
+    const t = (xLine - prevX) / denom;
+    return prevY + (ball.y - prevY) * t;
+  };
+
+  const kickTeam = (ball.lastKickedBy === 'sloths' || ball.lastKickedBy === 'dropbears') ? ball.lastKickedBy : null;
+  if (!kickTeam) return false;
+
+  const endSide = getEndSideForTeam(kickTeam); // which end that team is attacking this quarter
+  const xLine = (endSide === 'left') ? (LEFT_GOAL_X + 2) : (RIGHT_GOAL_X - 2);
+  const crossed = (endSide === 'left')
+    ? (prevX > xLine && ball.x <= xLine)
+    : (prevX < xLine && ball.x >= xLine);
+  if (!crossed) return false;
+
+  const y = yAtX(xLine);
+  const defending = (kickTeam === 'sloths') ? 'dropbears' : 'sloths';
+
+  // v100: goal shots must match the golf meter result (never "all goals")
+  if (ball.kickType === 'goalkick' && (ball.goalkickPlannedResult === 'goal' || ball.goalkickPlannedResult === 'behind' || ball.goalkickPlannedResult === 'onfull')){
+    const res = ball.goalkickPlannedResult;
+    ball.goalkickPlannedResult = null;
+    if (res === 'goal'){
+      score[kickTeam].g++;
+      showMessage('GOAL!');
+      showUmpireSignal('goal');
+      beginScorePause('goal', defending, endSide, y);
+    } else if (res === 'behind'){
+      score[kickTeam].b++;
+      showMessage('Behind');
+      showUmpireSignal('behind');
+      beginScorePause('behind', defending, endSide, y);
+    } else {
+      showMessage('OUT OF BOUNDS\nON THE FULL!');
+      playSound('boo');
+      beginScorePause('onfull', defending, endSide, y);
+    }
+    if (gameState === 'goalkick_flight') gameState = 'playing';
+    return true;
+  }
+
+  if (y > GOAL_Y_TOP && y < GOAL_Y_BOT){
+    score[kickTeam].g++;
+    showMessage('GOAL!');
+    showUmpireSignal('goal');
+    beginScorePause('goal', defending, endSide, y);
+  }
+  else if (y > BEHIND_Y_TOP && y < BEHIND_Y_BOT){
+    score[kickTeam].b++;
+    showMessage('Behind');
+    showUmpireSignal('behind');
+    beginScorePause('behind', defending, endSide, y);
+  }
+  else {
+    showMessage('OUT OF BOUNDS\nON THE FULL!');
+    playSound('boo');
+    beginScorePause('onfull', defending, endSide, y);
+  }
+  if (gameState === 'goalkick_flight') gameState = 'playing';
+  return true;
+}
+
+function doBoundaryThrowIn(bx, by){
+  // Simple placeholder throw-in: pop it up with small random drift.
+  clearPossession();
+  ball.free = true;
+  ball.kickType = 'throwin';
+  ball.lastKickedBy = null;
+  ball.intendedTarget = nearestPlayer(null, bx, by).best;
+
+  ball.x = bx;
+  ball.y = by;
+  ball.flightTotalFrames = 54;
+  ball.flightFramesLeft = 54;
+  ball.flightMaxHeight = 110;
+  ball.height = 0;
+  ball.gatherLockFrames = 0;
+
+  ball.vx = (Math.random() - 0.5) * 2.8;
+  ball.vy = (Math.random() - 0.5) * 2.8;
+
+  contest.active = false;
+  showMessage('THROW IN!');
+  if (gameState === 'goalkick_flight') gameState = 'playing';
+}
+
+function awardOutOnTheFullKick(bx, by, kickerTeam){
+  const oppTeam = (kickerTeam === 'sloths') ? 'dropbears' : 'sloths';
+  const receiver = nearestPlayer(oppTeam, bx, by).best;
+  if (receiver){
+    receiver.x = bx;
+    receiver.y = by;
+    clampToOval(receiver);
+    giveBallTo(receiver);
+    // v97: set a sane default aim so a full kick goes downfield (not out of bounds)
+    receiver.aimX = getAttackDir(receiver.team);
+    receiver.aimY = clamp((OVAL_CY - receiver.y) * 0.02, -0.65, 0.65);
+    // v102: 5s grace period before defenders can tackle
+    kickInGraceFrames = KICKIN_GRACE_FRAMES;
+    if (receiver.team === 'sloths') switchControlTo(receiver);
+  } else {
+    // Fallback: just throw it in.
+    doBoundaryThrowIn(bx, by);
+    return;
+  }
+
+  ball.free = false;
+  ball.kickType = null;
+  ball.flightFramesLeft = 0;
+  ball.flightTotalFrames = 0;
+  ball.flightMaxHeight = 0;
+  ball.height = 0;
+  ball.gatherLockFrames = 0;
+  ball.intendedTarget = null;
+  contest.active = false;
+
+  showMessage('OUT ON THE FULL!');
+  playSound('boo');
+  if (gameState === 'goalkick_flight') gameState = 'playing';
+}
+
+function handleBallOutOfBounds(prevX, prevY){
+  if (isInsideOval(ball.x, ball.y)) return false;
+  const b = boundaryPointAlongSegment(prevX, prevY, ball.x, ball.y);
+
+  const kicker = ball.lastKickedBy;
+  const outOnFull =
+    (ball.kickType === 'pass' || ball.kickType === 'chip' || ball.kickType === 'punt' || ball.kickType === 'goalkick') &&
+    (ball.height > 8 || ball.flightTotalFrames > 0);
+
+  // Stop the ball immediately
+  ball.x = b.x;
+  ball.y = b.y;
+  ball.vx = 0;
+  ball.vy = 0;
+  ball.height = 0;
+  ball.flightFramesLeft = 0;
+  ball.flightTotalFrames = 0;
+  ball.flightMaxHeight = 0;
+  ball.gatherLockFrames = 0;
+  ball.intendedTarget = null;
+
+  if (outOnFull && (kicker === 'sloths' || kicker === 'dropbears')){
+    awardOutOnTheFullKick(b.x, b.y, kicker);
+  } else {
+    doBoundaryThrowIn(b.x, b.y);
+  }
+  return true;
+}
+
+function clampToOval(obj){
+  obj.x = Math.max(OVAL_CX - OVAL_A, Math.min(OVAL_CX + OVAL_A, obj.x));
+  const rr = superYRangeAtX(obj.x);
+  obj.y = Math.max(rr.yMin, Math.min(rr.yMax, obj.y));
+}
+
+function buildOvalPath(){
+  const steps = 170;
+  ctx.beginPath();
+  for (let i=0;i<=steps;i++){
+    const t = (i/steps) * Math.PI*2;
+    const c = Math.cos(t);
+    const s = Math.sin(t);
+    const x = OVAL_CX + OVAL_A * Math.sign(c) * Math.pow(Math.abs(c), 2/OVAL_N);
+    const y = OVAL_CY + OVAL_B * Math.sign(s) * Math.pow(Math.abs(s), 2/OVAL_N);
+    const sx = worldToScreenX(x);
+    const sy = worldToScreenY(y);
+    if (i === 0) ctx.moveTo(sx, sy);
+    else ctx.lineTo(sx, sy);
+  }
+  ctx.closePath();
+}
+
+// ===================
+// AI HELPERS
+// ===================
+function applySeparation(){
+  for (let i=0;i<allPlayers.length;i++){
+    for (let j=i+1;j<allPlayers.length;j++){
+      const a = allPlayers[i], b = allPlayers[j];
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const d = Math.hypot(dx, dy);
+      // v46: prevent perfect overlap (d === 0) from persisting forever.
+      if (d <= 0.0001){
+        const a0 = Math.random() * Math.PI * 2;
+        const ux = Math.cos(a0), uy = Math.sin(a0);
+        const push = SEPARATION_DIST * SEPARATION_PUSH;
+        a.x -= ux * push; a.y -= uy * push;
+        b.x += ux * push; b.y += uy * push;
+        clampToOval(a); clampToOval(b);
+        continue;
+      }
+      if (d < SEPARATION_DIST){
+        const push = (SEPARATION_DIST - d) * SEPARATION_PUSH;
+        const u = { ux: dx/d, uy: dy/d };
+        // v28: during a mark, don't let bodies/separation "push you over the mark"
+        // and accidentally trigger play on.
+        const protectMarkCarrier = (gameState === 'markstop' && markCarrier && markCarrier.hasBall);
+        if (protectMarkCarrier && a === markCarrier){
+          b.x += u.ux * push; b.y += u.uy * push;
+          clampToOval(b);
+        } else if (protectMarkCarrier && b === markCarrier){
+          a.x -= u.ux * push; a.y -= u.uy * push;
+          clampToOval(a);
+        } else {
+          a.x -= u.ux * push; a.y -= u.uy * push;
+          b.x += u.ux * push; b.y += u.uy * push;
+          clampToOval(a); clampToOval(b);
+        }
+      }
+    }
+  }
+}
+
+function moveToward(p, tx, ty, spd){
+  const dx = tx - p.x;
+  const dy = ty - p.y;
+  const d = Math.hypot(dx, dy);
+  if (d < 1) return;
+  const u = safeUnit(dx, dy);
+  const step = Math.min(spd * playerSpeedFactor(p), d);
+  p.x += u.ux * step;
+  p.y += u.uy * step;
+  clampToOval(p);
+}
+
+// ===================
+// FORMATION DISCIPLINE
+// ===================
+function maxLeaveHomeForBand(band){
+  if (band === 'back') return MAX_LEAVE_HOME_BACK;
+  if (band === 'mid' || band === 'ruck') return MAX_LEAVE_HOME_MID;
+  return MAX_LEAVE_HOME_FWD;
+}
+
+function shouldCommitToPlay(p, hotX, hotY){
+  // Zone-based commitment: react hard if the ball is in your zone (near your home),
+  // otherwise keep shape (don't abandon your band entirely).
+  const dHome = Math.hypot(p.homeX - hotX, p.homeY - hotY);
+  const dNow  = Math.hypot(p.x - hotX, p.y - hotY);
+  const zone =
+    (p.band === 'back') ? 520 :
+    (p.band === 'mid' || p.band === 'ruck') ? 720 :
+    620;
+
+  if (dHome < zone) return true;
+  // Mids/ruck can still help if it's close to them right now.
+  if (p.band === 'mid' || p.band === 'ruck') return dNow < (ACTION_RADIUS + 220);
+  return dNow < ACTION_RADIUS;
+}
+
+function formationTarget(p, myCarrier){
+  if (p.roamTimer > 0) {
+    p.roamTimer--;
+    // v48: if you've already arrived, don't stand still for ages — force a new roam soon.
+    if (!p.controlled && (p.roamX != null) && (p.roamY != null) && Math.hypot(p.x - p.roamX, p.y - p.roamY) < 6){
+      p.roamTimer = Math.min(p.roamTimer, 10);
+    }
+    return { tx:p.roamX, ty:p.roamY };
+  }
+
+  let tx = p.homeX;
+  let ty = p.homeY;
+
+  if (myCarrier){
+    // v25: encourage support to push forward (incl. into forward 50) for short options.
+    const attackDir = getAttackDir(p.team);
+    const goalX = getGoalXForTeam(p.team);
+    const distToGoal = Math.abs(myCarrier.x - goalX);
+    const inAttackingHalf = (attackDir === -1) ? (myCarrier.x < OVAL_CX) : (myCarrier.x > OVAL_CX);
+    const inForward50 = distToGoal <= (FIFTY_METRE + 35);
+    const supportBand = (p.band === 'fwd' || p.band === 'mid' || p.band === 'ruck');
+
+    let ahead = 150 + Math.random()*310;
+    if (supportBand) ahead += 120;
+    if (inAttackingHalf) ahead += 80;
+    if (inForward50) ahead += 120;
+
+    const lateral = (Math.random()-0.5) * (supportBand ? 460 : 520);
+    tx = myCarrier.x + attackDir * ahead;
+    ty = myCarrier.y + lateral;
+
+    // If the carrier is in/near the forward 50, bias support players INTO the forward 50
+    // so the short option is actually ahead (not behind).
+    if (inForward50 && supportBand){
+      if (attackDir === -1) tx = Math.min(tx, LEFT_GOAL_X + FIFTY_METRE - 35);
+      else tx = Math.max(tx, RIGHT_GOAL_X - FIFTY_METRE + 35);
+    }
+
+    const tetherBase = (p.band === 'mid' || p.band === 'ruck') ? 0.36 : 0.58;
+    const tether = inForward50 ? (tetherBase * 0.62) : (inAttackingHalf ? (tetherBase * 0.82) : tetherBase);
+    tx = tx*(1-tether) + p.homeX*tether;
+    ty = ty*(1-tether) + p.homeY*tether;
+  } else {
+    tx = p.homeX + (Math.random()-0.5)*260;
+    ty = p.homeY + (Math.random()-0.5)*260;
+  }
+
+  const maxLeave = maxLeaveHomeForBand(p.band);
+  const dx = tx - p.homeX;
+  const dy = ty - p.homeY;
+  const dd = Math.hypot(dx, dy);
+  if (dd > maxLeave){
+    const u = safeUnit(dx, dy);
+    tx = p.homeX + u.ux * maxLeave;
+    ty = p.homeY + u.uy * maxLeave;
+  }
+
+  p.roamX = tx; p.roamY = ty;
+  clampToOval(p);
+  // Longer roams = less jittery AI
+  p.roamTimer = 70 + Math.floor(Math.random()*110);
+  return { tx, ty };
+}
+
+// ===================
+// DRAWING
+// ===================
+function drawField(){
+  const skyGrad = ctx.createLinearGradient(0,0,0,SKY_H);
+  skyGrad.addColorStop(0,'#1a3a1a');
+  skyGrad.addColorStop(1,'#2d5a2d');
+  ctx.fillStyle = skyGrad;
+  ctx.fillRect(0,0,800,SKY_H);
+
+  ctx.fillStyle = '#3d8b37';
+  ctx.fillRect(0,SKY_H,800,600-SKY_H);
+
+  ctx.save();
+  buildOvalPath();
+  ctx.clip();
+
+  ctx.fillStyle = '#358030';
+  for (let i=0;i<24;i++){
+    const wx = (i*150) - 50;
+    const sx = worldToScreenX(wx);
+    if (sx > -220 && sx < 1020) ctx.fillRect(sx, SKY_H, 75, 600-SKY_H);
+  }
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.70)';
+  ctx.lineWidth = 3;
+  buildOvalPath();
+  ctx.stroke();
+
+  const cx = worldToScreenX(OVAL_CX);
+  const cy = worldToScreenY(OVAL_CY);
+  if (cx > -80 && cx < 880){
+    const rr = superYRangeAtX(OVAL_CX);
+    ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cx, worldToScreenY(rr.yMin));
+    ctx.lineTo(cx, worldToScreenY(rr.yMax));
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, 55, 40, 0, 0, Math.PI*2);
+    ctx.stroke();
+  }
+
+  // 50m arcs
+  ctx.strokeStyle = 'rgba(255,255,255,0.50)';
+  ctx.lineWidth = 2;
+  const leftArcX = worldToScreenX(LEFT_GOAL_X);
+  ctx.beginPath();
+  ctx.arc(leftArcX, worldToScreenY(OVAL_CY), FIFTY_METRE, -Math.PI/2, Math.PI/2);
+  ctx.stroke();
+
+  const rightArcX = worldToScreenX(RIGHT_GOAL_X);
+  ctx.beginPath();
+  ctx.arc(rightArcX, worldToScreenY(OVAL_CY), FIFTY_METRE, Math.PI/2, (3*Math.PI)/2);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+function drawGoalPosts(){
+  const post = (x, y, size) => ctx.fillRect(x - size/2, y - size/2, size, size);
+  const yMid = worldToScreenY((GOAL_Y_TOP + GOAL_Y_BOT)/2);
+  const sizeTall = 14;
+  const sizeShort = 12;
+
+  const lx = worldToScreenX(LEFT_GOAL_X);
+  if (lx > -180 && lx < 240){
+    ctx.fillStyle = '#fff';
+    post(lx, yMid - GOAL_POST_GAP/2, sizeTall);
+    post(lx, yMid + GOAL_POST_GAP/2, sizeTall);
+    ctx.fillStyle = '#999';
+    post(lx, yMid - BEHIND_GAP/2, sizeShort);
+    post(lx, yMid + BEHIND_GAP/2, sizeShort);
+  }
+
+  const rx = worldToScreenX(RIGHT_GOAL_X);
+  if (rx > 560 && rx < 980){
+    ctx.fillStyle = '#fff';
+    post(rx, yMid - GOAL_POST_GAP/2, sizeTall);
+    post(rx, yMid + GOAL_POST_GAP/2, sizeTall);
+    ctx.fillStyle = '#999';
+    post(rx, yMid - BEHIND_GAP/2, sizeShort);
+    post(rx, yMid + BEHIND_GAP/2, sizeShort);
+  }
+}
+
+function drawPlayer(p){
+  const sx = worldToScreenX(p.x);
+  const syGround = worldToScreenY(p.y);
+  const scale = getScale(p.y);
+  if (sx < -50 || sx > 850 || syGround < -120 || syGround > 740) return;
+
+  // v109: match on-field look to portrait (skin tone + hair color only)
+  const [skinKey, hairKey, hairStyle] = getPlayerAppearance(p.name || '');
+  const skin = SKIN_TONES[skinKey] || SKIN_TONES.fair;
+  const hair = hairKey ? HAIR_COLORS[hairKey] : null;
+
+  const liftNorm = jumpLiftNorm(p);
+  const lift = liftNorm * (JUMP_HEIGHT_PX * scale);
+  const sy = syGround - lift;
+
+  const shadowScale = 1 - 0.42*liftNorm;
+  ctx.fillStyle = 'rgba(0,0,0,0.32)';
+  ctx.beginPath();
+  ctx.ellipse(sx, syGround + 15*scale, 8*scale*shadowScale, 3*scale*shadowScale, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  // Legs (skin)
+  ctx.fillStyle = skin.base;
+  ctx.fillRect(sx - 4*scale, sy + 2*scale, 3*scale, 10*scale);
+  ctx.fillRect(sx + 1*scale, sy + 2*scale, 3*scale, 10*scale);
+
+  ctx.fillStyle = (p.team==='sloths') ? '#ff8c00' : '#333';
+  ctx.fillRect(sx - 7*scale, sy - 9*scale, 14*scale, 13*scale);
+
+  ctx.fillStyle = (p.team==='sloths') ? '#cc6600' : '#111';
+  ctx.fillRect(sx - 2*scale, sy - 8*scale, 4*scale, 10*scale);
+
+  // Face (skin)
+  ctx.fillStyle = skin.base;
+  ctx.beginPath();
+  ctx.arc(sx, sy - 14*scale, 5*scale, 0, Math.PI*2);
+  ctx.fill();
+
+  // Hair (none for bald players)
+  if (hair){
+    // Keep the on-field sprite simple; vary silhouette a little by hairStyle.
+    ctx.fillStyle = hair.base;
+    ctx.beginPath();
+    if (hairStyle === 'buzzcut'){
+      ctx.ellipse(sx, sy - 17.2*scale, 4*scale, 1.4*scale, 0, 0, Math.PI*2);
+    } else if (hairStyle === 'spiked'){
+      ctx.moveTo(sx, sy - 22*scale);
+      ctx.lineTo(sx - 5*scale, sy - 17*scale);
+      ctx.lineTo(sx + 5*scale, sy - 17*scale);
+      ctx.closePath();
+    } else if (hairStyle === 'curly'){
+      ctx.ellipse(sx, sy - 18.2*scale, 4.6*scale, 2.3*scale, 0, 0, Math.PI*2);
+    } else if (hairStyle === 'shaggy' || hairStyle === 'mullet'){
+      ctx.ellipse(sx, sy - 18.0*scale, 5.1*scale, 2.6*scale, 0, 0, Math.PI*2);
+    } else if (hairStyle === 'medium' || hairStyle === 'wavy'){
+      ctx.ellipse(sx, sy - 18.0*scale, 4.8*scale, 2.4*scale, 0, 0, Math.PI*2);
+    } else {
+      // 'short' and default
+      ctx.ellipse(sx, sy - 18*scale, 4*scale, 2*scale, 0, 0, Math.PI*2);
+    }
+    ctx.fill();
+
+    // Small shadow strip for depth (helps blonde/grey read better)
+    ctx.fillStyle = hair.shadow;
+    ctx.beginPath();
+    ctx.ellipse(sx, sy - 17.2*scale, 3.2*scale, 1.1*scale, 0, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  if (p.controlled){
+    // v62: keep only a simple in-world marker; name/portrait is in HUD (bottom-left)
+    ctx.fillStyle = '#ffd700';
+    ctx.beginPath();
+    ctx.moveTo(sx, sy - 26*scale);
+    ctx.lineTo(sx - 4*scale, sy - 33*scale);
+    ctx.lineTo(sx + 4*scale, sy - 33*scale);
+    ctx.closePath();
+    ctx.fill();
+  }
+}
+
+function drawBall(){
+  const sx = worldToScreenX(ball.x);
+  const syGround = worldToScreenY(ball.y);
+  const scale = getScale(ball.y);
+
+  // Height is vertical-on-screen (not "north" in world coords)
+  const h = ball.height * HEIGHT_DRAW_BOOST * scale;
+  const sy = syGround - h;
+
+  if (sx < -50 || sx > 850 || sy < -200 || sy > 800) return;
+
+  const hs = Math.max(0.35, 1 - (h / 150));
+  ctx.fillStyle = 'rgba(0,0,0,0.42)';
+  ctx.beginPath();
+  ctx.ellipse(sx, syGround + 3, 7*scale*hs, 2.2*scale*hs, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  ctx.fillStyle = '#cc4422';
+  ctx.beginPath();
+  ctx.ellipse(sx, sy, 7*scale, 4*scale, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(sx - 4*scale, sy);
+  ctx.lineTo(sx + 4*scale, sy);
+  ctx.stroke();
+}
+
+// v25: show where a long kick will land
+function teamTagColor(team){
+  if (team === 'sloths') return '#ff8c00';
+  if (team === 'dropbears') return '#888';
+  return '#fff';
+}
+
+function drawLandingMarker(){
+  if (!ball.free) return;
+  // v26: no marker for handpasses or goal shots
+  if (ball.kickType === 'handball' || ball.kickType === 'goalkick') return;
+  // v28: only show the circle for markable kicks (15m+), so "under the circle" implies a mark stop.
+  if (!(ball.kickType === 'pass' || ball.kickType === 'chip' || ball.kickType === 'punt')) return;
+  // v25+: marker should appear reliably for balls in flight (not just punts).
+  if (!isKickInAir()) return;
+  const pt = predictDropZoneCenter();
+
+  const kickDist = (ball.flightTotalFrames > 0 && ball.flightT < 1)
+    ? Math.hypot(ball.flightToX - ball.flightFromX, ball.flightToY - ball.flightFromY)
+    : Math.hypot(ball.x - ball.kickStartX, ball.y - ball.kickStartY);
+  if (kickDist < MARK_MIN_KICK_DIST) return;
+
+  const sx = worldToScreenX(pt.x);
+  const sy = worldToScreenY(pt.y);
+  if (sx < -120 || sx > 920 || sy < -120 || sy > 720) return;
+
+  const scale = getScale(pt.y);
+  const r = dropZoneRadiusAt(pt.y);
+
+  ctx.save();
+  ctx.globalAlpha = 0.58;
+  ctx.fillStyle = teamTagColor(ball.lastKickedBy);
+  ctx.beginPath();
+  ctx.arc(sx, sy, r, 0, Math.PI*2);
+  ctx.fill();
+
+  ctx.globalAlpha = 0.70;
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(sx, sy, r, 0, Math.PI*2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawKickMeter(){
+  // v34: show charge bar during markstop too (so you can wind up a full kick from a mark)
+  if (!(gameState === 'playing' || gameState === 'markstop')) return;
+  const p = getControlledPlayer();
+  if (!p || !p.hasBall) return;
+
+  const w = 260, h = 16;
+  const x = 400 - w/2;
+  const y = 560;
+
+  ctx.globalAlpha = kickCharging ? 1 : 0.45;
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = '#ffd700';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x, y, w, h);
+
+  const t = Math.min(1, kickChargeFrames / KICK_CHARGE_MAX_FRAMES);
+  ctx.fillStyle = '#ffd700';
+  ctx.fillRect(x+2, y+2, (w-4)*t, h-4);
+
+  ctx.globalAlpha = 1;
+}
+
+function drawGoalKickMeter(){
+  if (gameState !== 'goalkick') return;
+
+  ctx.fillStyle = 'rgba(0,0,0,0.60)';
+  ctx.fillRect(0,0,800,600);
+
+  ctx.fillStyle = '#222';
+  ctx.fillRect(150, 480, 500, 50);
+  ctx.strokeStyle = '#ffd700';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(150, 480, 500, 50);
+
+  ctx.fillStyle = '#a00'; ctx.fillRect(155, 485, 90, 40);
+  ctx.fillStyle = '#aa0'; ctx.fillRect(245, 485, 70, 40);
+  ctx.fillStyle = '#0a0'; ctx.fillRect(315, 485, 170, 40);
+  ctx.fillStyle = '#aa0'; ctx.fillRect(485, 485, 70, 40);
+  ctx.fillStyle = '#a00'; ctx.fillRect(555, 485, 90, 40);
+
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 11px Courier New';
+  ctx.textAlign = 'center';
+  ctx.fillText('OUT', 200, 510);
+  ctx.fillText('BEHIND', 280, 510);
+  ctx.fillText('GOAL!', 400, 510);
+  ctx.fillText('BEHIND', 520, 510);
+  ctx.fillText('OUT', 600, 510);
+
+  const mx = 400 + goalKickMeter * 2.5;
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(mx - 3, 475, 6, 60);
+
+  ctx.font = 'bold 18px Courier New';
+  ctx.fillStyle = '#ffd700';
+  ctx.fillText('PRESS SPACE!', 400, 460);
+}
+
+function drawUI(){
+  ctx.fillStyle = 'rgba(0,0,0,0.85)';
+  ctx.fillRect(150, 5, 500, 50);
+
+  ctx.font = 'bold 14px Courier New';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#ff8c00';
+  ctx.fillText('GW SLOTHS', 165, 26);
+
+  ctx.textAlign = 'right';
+  ctx.fillStyle = '#888';
+  ctx.fillText('DROPBEARS', 635, 26);
+
+  const sT = score.sloths.g*6 + score.sloths.b;
+  const dT = score.dropbears.g*6 + score.dropbears.b;
+
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 20px Courier New';
+  ctx.textAlign = 'center';
+  ctx.fillText(`${score.sloths.g}.${score.sloths.b} (${sT})  -  ${score.dropbears.g}.${score.dropbears.b} (${dT})`, 400, 32);
+
+  const totalSecs = Math.max(0, Math.floor(quarterTime));
+  const mins = Math.floor(totalSecs / 60);
+  const secs = totalSecs % 60;
+  ctx.font = 'bold 12px Courier New';
+  ctx.fillStyle = '#ffd700';
+  ctx.fillText(`Q${quarter}  ${mins}:${secs.toString().padStart(2,'0')}`, 400, 50);
+
+  if (gameState === 'quarterbreak'){
+    ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    ctx.fillRect(0,0,800,600);
+    ctx.fillStyle = '#ffd700';
+    ctx.font = 'bold 34px Courier New';
+    ctx.textAlign = 'center';
+    ctx.fillText('QUARTER TIME', 400, 280);
+    ctx.font = 'bold 18px Courier New';
+    ctx.fillStyle = '#fff';
+    ctx.fillText(`PRESS SPACE FOR QUARTER ${nextQuarter}`, 400, 320);
+  }
+
+  if (gameState === 'fulltime'){
+    ctx.fillStyle = 'rgba(0,0,0,0.78)';
+    ctx.fillRect(0,0,800,600);
+    const sT2 = score.sloths.g*6 + score.sloths.b;
+    const dT2 = score.dropbears.g*6 + score.dropbears.b;
+    const winner = (sT2 === dT2) ? 'DRAW'
+                 : (sT2 > dT2) ? 'GW SLOTHS WIN!'
+                 : 'DROPBEARS WIN!';
+    ctx.fillStyle = '#ffd700';
+    ctx.font = 'bold 40px Courier New';
+    ctx.textAlign = 'center';
+    ctx.fillText('FULL TIME', 400, 250);
+    ctx.font = 'bold 22px Courier New';
+    ctx.fillStyle = '#fff';
+    ctx.fillText(`${score.sloths.g}.${score.sloths.b} (${sT2})  -  ${score.dropbears.g}.${score.dropbears.b} (${dT2})`, 400, 300);
+    ctx.fillStyle = '#ffd700';
+    ctx.font = 'bold 26px Courier New';
+    ctx.fillText(winner, 400, 350);
+  }
+
+  const p = getControlledPlayer();
+  if (p && p.hasBall && isInPlayerGoalRange(p) && gameState === 'playing'){
+    ctx.fillStyle = '#0f0';
+    ctx.font = 'bold 14px Courier New';
+    ctx.textAlign = 'center';
+    ctx.fillText('IN RANGE - TAP SPACE FOR GOAL SHOT!', 400, 585);
+  }
+
+  if (gameState === 'markstop'){
+    ctx.fillStyle = '#ffd700';
+    ctx.font = 'bold 18px Courier New';
+    ctx.textAlign = 'center';
+    ctx.fillText('MARK!', 400, 585);
+  }
+}
+
+function drawPlayerHUDPanel(p, x, y, alignRight, accent){
+  if (!p) return;
+
+  // v92: match mini-map height for a clean HUD strip
+  const h = 64; // v106: ~30% shorter HUD panels
+  const w = 240;
+
+  ctx.save();
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = 'rgba(0,0,0,0.70)';
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 3;
+  ctx.strokeRect(x, y, w, h);
+
+  // Keep all text clipped inside the panel
+  ctx.beginPath();
+  ctx.rect(x, y, w, h);
+  ctx.clip();
+
+  // Portrait
+  const ps = 38;
+  const px0 = alignRight ? (x + w - 12 - ps) : (x + 12);
+  const py0 = y + 13; // v108: center portrait in shorter panel
+  ctx.fillStyle = '#111';
+  ctx.fillRect(px0 - 2, py0 - 2, ps + 4, ps + 4);
+  drawPlayerPortrait(p, px0, py0, ps);
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(px0, py0, ps, ps);
+
+  // Text anchor + available text region (avoid drawing under the portrait)
+  const tx = alignRight ? (x + 12) : (px0 + ps + 12);
+  const textLeft = alignRight ? (x + 12) : tx;
+  const textRight = alignRight ? (px0 - 10) : (x + w - 12);
+  const textW = Math.max(0, textRight - textLeft);
+
+  function drawFitText(str, x0, y0, maxW){
+    if (!str) return;
+    let s = String(str);
+    if (ctx.measureText(s).width <= maxW){ ctx.fillText(s, x0, y0); return; }
+    while (s.length > 1 && ctx.measureText(s + '…').width > maxW){
+      s = s.slice(0, -1);
+    }
+    ctx.fillText(s + '…', x0, y0);
+  }
+
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+
+  // Name
+  ctx.font = 'bold 15px Courier New';
+  ctx.fillStyle = accent;
+  drawFitText(p.name, textLeft, py0 - 2, textW);
+
+  // Stats (2 rows x 3 cols)
+  const statLines = [
+    [`SPD ${getStat(p,'SPEED')}`, `TKL ${getStat(p,'TACKLE')}`, `MRK ${getStat(p,'MARKING')}`],
+    [`GK ${getStat(p,'GOAL_KICK')}`, `LK ${getStat(p,'LONG_KICK')}`, `HND ${getStat(p,'HANDPASS')}`]
+  ];
+  ctx.font = 'bold 11px Courier New';
+  ctx.fillStyle = '#fff';
+  // v107: raise stats block so it fits nicely in the shorter panel
+  const rowY0 = y + 26;
+  const colW = Math.max(1, Math.floor(textW / 3));
+  for (let r = 0; r < statLines.length; r++){
+    for (let c = 0; c < statLines[r].length; c++){
+      const s = statLines[r][c];
+      drawFitText(s, textLeft + c * colW, rowY0 + r * 18, colW - 4);
+    }
+  }
+
+  ctx.restore();
+}
+
+function drawControlledPlayerHUD(){
+  const p = getControlledPlayer();
+  if (!p) return;
+
+  // Avoid overlapping the kick meter (y=560) by placing panels above it.
+  const kickMeterY = 560;
+  const panelH = 64; // v107: match shorter HUD/minimap height
+  const y = Math.max(14, (kickMeterY - 12) - panelH);
+  drawPlayerHUDPanel(p, 14, y, false, '#ffd700');
+}
+
+function getEnemyPrimaryPlayer(){
+  // "Primary" enemy for the HUD:
+  // - If they have possession: carrier
+  // - If ball in flight: closest to the drop zone (receiving mark)
+  // - If ball is free: closest to the ball
+  // - If we have possession: closest to our carrier (primary defender)
+  // - Fallback: nearest to ball
+  const enemyCarrier = allPlayers.find(pp => pp.team === 'dropbears' && pp.hasBall);
+  if (enemyCarrier) return enemyCarrier;
+
+  if (isKickInAir()){
+    const dp = predictDropZoneCenter();
+    return nearestPlayer('dropbears', dp.x, dp.y).best;
+  }
+
+  const slothCarrier = allPlayers.find(pp => pp.team === 'sloths' && pp.hasBall);
+  if (slothCarrier){
+    return nearestPlayer('dropbears', slothCarrier.x, slothCarrier.y).best;
+  }
+
+  if (ball.free){
+    return nearestPlayer('dropbears', ball.x, ball.y).best;
+  }
+
+  return nearestPlayer('dropbears', ball.x, ball.y).best;
+}
+
+function drawEnemyPossessionHUD(){
+  const enemyPrimary = getEnemyPrimaryPlayer();
+  if (!enemyPrimary) return;
+
+  const kickMeterY = 560;
+  const panelH = 64; // v107: match shorter HUD/minimap height
+  const y = Math.max(14, (kickMeterY - 12) - panelH);
+  const w = 240;
+  const x = canvas.width - w - 14;
+  drawPlayerHUDPanel(enemyPrimary, x, y, true, '#ddd');
+}
+
+// v91: mini-map "camera" smoothing so it doesn't jitter
+let miniMapCamX = null;
+let miniMapCamY = null;
+function updateMiniMapCamera(){
+  const controlled = getControlledPlayer();
+  const ourCarrier = allPlayers.find(pp => pp.team === 'sloths' && pp.hasBall) || null;
+  const enemyCarrier = allPlayers.find(pp => pp.team === 'dropbears' && pp.hasBall) || null;
+
+  let tx, ty;
+  if (controlled && controlled.hasBall){
+    // Lead slightly in the aim direction for better "passing options" visibility
+    tx = controlled.x + (controlled.aimX || 0) * 180;
+    ty = controlled.y + (controlled.aimY || 0) * 120;
+  } else if (ourCarrier){
+    tx = ourCarrier.x; ty = ourCarrier.y;
+  } else if (enemyCarrier){
+    tx = enemyCarrier.x; ty = enemyCarrier.y;
+  } else {
+    tx = ball.x; ty = ball.y;
+  }
+
+  if (!Number.isFinite(miniMapCamX) || !Number.isFinite(miniMapCamY)){
+    miniMapCamX = tx; miniMapCamY = ty;
+  }
+
+  // Deadzone follow: only pan when the target drifts away from center.
+  const deadX = 170;
+  const deadY = 125;
+  const k = 0.18; // smoothing
+  const dx = tx - miniMapCamX;
+  const dy = ty - miniMapCamY;
+  if (Math.abs(dx) > deadX){
+    miniMapCamX += (dx - Math.sign(dx) * deadX) * k;
+  }
+  if (Math.abs(dy) > deadY){
+    miniMapCamY += (dy - Math.sign(dy) * deadY) * k;
+  }
+
+  // Clamp to the oval bounds so the window doesn't drift off-world.
+  miniMapCamX = clamp(miniMapCamX, OVAL_CX - OVAL_A, OVAL_CX + OVAL_A);
+  const rr = superYRangeAtX(miniMapCamX);
+  miniMapCamY = clamp(miniMapCamY, rr.yMin, rr.yMax);
+}
+
+// v86: Mini-map between the two HUD panels
+function drawMiniMap(){
+  const kickMeterY = 560;
+  const panelH = 62;
+  // v89: tactical "camera" mini-map (no oval): show a zoomed-in window around play
+  const mapH = 64; // v106: ~30% shorter mini-map
+  const y = Math.max(14, (kickMeterY - 12) - mapH);
+
+  const panelW = 240;
+  const leftX = 14;
+  const rightX = canvas.width - panelW - 14;
+  const gap = rightX - (leftX + panelW);
+  if (gap < 80) return; // no room
+
+  const pad = 8;
+  const w = Math.min(300, gap - 12);
+  const h = mapH;
+  const x = leftX + panelW + ((gap - w) / 2);
+
+  ctx.save();
+  ctx.globalAlpha = 1;
+  // Square panel (like a camera view)
+  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x, y, w, h);
+
+  // Camera center (smoothed in update loop)
+  const cxW = (miniMapCamX ?? ball.x);
+  const cyW = (miniMapCamY ?? ball.y);
+
+  // World window size shown in minimap (tune for passing options visibility)
+  const viewW = 1050;
+  const viewH = 760;
+
+  // Map world -> minimap
+  const sx = (w - pad*2) / viewW;
+  const sy = (h - pad*2) / viewH;
+  const ox = x + pad;
+  const oy = y + pad;
+
+  // Light grid
+  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+  ctx.lineWidth = 1;
+  for (let gx = 0; gx <= 6; gx++){
+    const xx = ox + (gx/6) * (w - pad*2);
+    ctx.beginPath(); ctx.moveTo(xx, oy); ctx.lineTo(xx, oy + (h - pad*2)); ctx.stroke();
+  }
+  for (let gy = 0; gy <= 4; gy++){
+    const yy = oy + (gy/4) * (h - pad*2);
+    ctx.beginPath(); ctx.moveTo(ox, yy); ctx.lineTo(ox + (w - pad*2), yy); ctx.stroke();
+  }
+
+  // Draw players within the window
+  const marker = 6;
+  for (const p of allPlayers){
+    const dx = p.x - cxW;
+    const dy = p.y - cyW;
+    if (Math.abs(dx) > viewW/2 || Math.abs(dy) > viewH/2) continue;
+    const px = ox + (dx + viewW/2) * sx;
+    const py = oy + (dy + viewH/2) * sy;
+    // v90: team colors on minimap (our guys orange, enemies black)
+    ctx.fillStyle = (p.team === 'sloths') ? '#ff8c00' : '#111';
+    ctx.fillRect(px - marker/2, py - marker/2, marker, marker);
+    if (p.controlled){
+      ctx.strokeStyle = '#00ff88';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(px - (marker/2 + 2), py - (marker/2 + 2), marker + 4, marker + 4);
+    }
+    if (p.hasBall){
+      ctx.strokeStyle = '#ff4';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(px, py, 8, 0, Math.PI*2);
+      ctx.stroke();
+    }
+  }
+
+  // Center reticle
+  ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+  ctx.lineWidth = 1;
+  const midX = x + w/2, midY = y + h/2;
+  ctx.beginPath(); ctx.moveTo(midX - 10, midY); ctx.lineTo(midX + 10, midY); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(midX, midY - 10); ctx.lineTo(midX, midY + 10); ctx.stroke();
+
+  ctx.restore();
+}
+
+// v101: pause overlay
+function drawPauseOverlay(){
+  if (!isPaused) return;
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = 'bold 64px Courier New';
+  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  ctx.fillText('PAUSED', canvas.width/2 + 3, canvas.height/2 + 3);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText('PAUSED', canvas.width/2, canvas.height/2);
+  ctx.font = 'bold 16px Courier New';
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.fillText('Press ESC to resume', canvas.width/2, canvas.height/2 + 54);
+  ctx.restore();
+}
+
+function drawMessage(){
+  if (messageTimer <= 0) return;
+  ctx.globalAlpha = Math.min(1, messageTimer / 30);
+  ctx.font = 'bold 48px Courier New';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#000';
+  ctx.fillText(messageText, 402, 302);
+  ctx.fillStyle = (messageText==='GOAL!') ? '#ffd700'
+               : (messageText==='TACKLED!') ? '#f44'
+               : '#aaa';
+  ctx.fillText(messageText, 400, 300);
+  ctx.globalAlpha = 1;
+  messageTimer--;
+}
+
+function drawGoalUmpire(){
+  if (umpireDisplayFrames <= 0 || !umpireSignalType) return;
+
+  // v58: After play resumes, keep the animation but render it as a small overlay
+  // so it doesn't block gameplay.
+  const isCutaway = (scorePauseFrames > 0);
+  const s = isCutaway ? 1.0 : 0.58;
+  if (!isCutaway){
+    // Shrink + move to top-right corner.
+    ctx.save();
+    ctx.translate(canvas.width - canvas.width * s, 0);
+    ctx.scale(s, s);
+  }
+
+  const cx = 400;
+  const cy = 300;
+  
+  // Animation progress (0 to 1)
+  const totalProgress = 1 - (umpireDisplayFrames / UMPIRE_DISPLAY_FRAMES);
+  const armsRaised = totalProgress >= 0.5;
+  const armTransition = armsRaised ? Math.min(1, (totalProgress - 0.5) / 0.1) : 0;
+  const textProgress = armsRaised ? Math.min(1, (totalProgress - 0.55) / 0.15) : 0;
+
+  // v72: No sound "as it goes through" — play crowd reaction when the umpire hits phase 2 (arms up).
+  if (armsRaised && !umpireSoundPlayed){
+    playSound(umpireSignalType === 'goal' ? 'goal' : 'behind');
+    umpireSoundPlayed = true;
+  }
+  
+  // Fade in/out (scale with animation duration so "everything is 2x speed")
+  const fadeFrames = Math.max(10, Math.round(25 * (UMPIRE_DISPLAY_FRAMES / 300)));
+  let alpha = 1;
+  if (umpireDisplayFrames > UMPIRE_DISPLAY_FRAMES - fadeFrames){
+    alpha = (UMPIRE_DISPLAY_FRAMES - umpireDisplayFrames) / fadeFrames;
+  } else if (umpireDisplayFrames < fadeFrames){
+    alpha = umpireDisplayFrames / fadeFrames;
+  }
+  // Slightly soften the overlay during live play.
+  const alphaMult = isCutaway ? 1 : 0.90;
+  ctx.globalAlpha = alpha * alphaMult;
+  
+  const ox = cx - 75;
+  const oy = cy - 110;
+  const PS = 3; // pixel size
+  
+  function px(x, y, w, h){
+    ctx.fillRect(ox + x * PS, oy + y * PS, (w || 1) * PS, (h || 1) * PS);
+  }
+  
+  // === BACKDROP ===
+  ctx.fillStyle = '#0a0a0a';
+  px(-12, -8, 74, 90);
+  
+  // Gold border
+  ctx.fillStyle = '#ffd700';
+  px(-11, -7, 72, 1);
+  px(-11, 81, 72, 1);
+  px(-11, -7, 1, 89);
+  px(60, -7, 1, 89);
+  
+  ctx.fillStyle = '#ffec80';
+  px(-10, -6, 70, 1);
+  
+  // Blurred crowd background
+  for(let i = 0; i < 50; i++){
+    const shade = 25 + Math.sin(i * 0.5) * 8;
+    ctx.fillStyle = `rgb(${shade + 10}, ${shade + 5}, ${shade})`;
+    px(-9, -4 + i, 68, 1);
+  }
+  
+  // Green grass
+  const grassColors = ['#2e8b2e', '#3a9d3a', '#2e8b2e', '#267326', '#2e8b2e', '#3a9d3a'];
+  for(let i = 0; i < 28; i++){
+    ctx.fillStyle = grassColors[i % grassColors.length];
+    px(-9, 46 + i, 68, 1);
+  }
+  
+  // === UMPIRE ===
+  
+  // Shadow on ground
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  px(18, 72, 14, 2);
+  
+  // -- YELLOW CAP --
+  ctx.fillStyle = '#e6d200';
+  px(19, 10, 12, 6);
+  ctx.fillStyle = '#f0dc00';
+  px(20, 11, 10, 4);
+  ctx.fillStyle = '#ccba00';
+  px(19, 14, 12, 2);
+  
+  // Cap brim
+  ctx.fillStyle = '#e6d200';
+  px(18, 16, 14, 3);
+  ctx.fillStyle = '#d4c400';
+  px(19, 17, 12, 2);
+  ctx.fillStyle = '#baa800';
+  px(20, 18, 10, 1);
+  
+  // AFL logo on cap
+  ctx.fillStyle = '#1a1a4a';
+  px(23, 12, 4, 3);
+  
+  // -- FACE --
+  ctx.fillStyle = '#f0c8a0';
+  px(20, 19, 10, 10);
+  ctx.fillStyle = '#e8b888';
+  px(20, 19, 2, 10);
+  px(20, 27, 10, 2);
+  ctx.fillStyle = '#f8d8b8';
+  px(26, 20, 3, 7);
+  
+  // Eyes
+  ctx.fillStyle = '#ffffff';
+  px(21, 22, 3, 2);
+  px(26, 22, 3, 2);
+  ctx.fillStyle = '#4a6080';
+  px(22, 22, 2, 2);
+  px(27, 22, 2, 2);
+  ctx.fillStyle = '#000000';
+  px(22, 22, 1, 1);
+  px(27, 22, 1, 1);
+  
+  // Eyebrows
+  ctx.fillStyle = '#5a4030';
+  px(21, 21, 3, 1);
+  px(26, 21, 3, 1);
+  
+  // Nose
+  ctx.fillStyle = '#e8b080';
+  px(24, 24, 2, 3);
+  
+  // Mouth
+  ctx.fillStyle = '#c08070';
+  px(23, 28, 4, 1);
+  
+  // Ears
+  ctx.fillStyle = '#f0c8a0';
+  px(19, 23, 1, 3);
+  px(30, 23, 1, 3);
+  
+  // -- NECK --
+  ctx.fillStyle = '#f0c8a0';
+  px(22, 29, 6, 2);
+  
+  // -- FLUORESCENT YELLOW SHIRT --
+  ctx.fillStyle = '#d4e000';
+  px(15, 31, 20, 22);
+  
+  // Shirt shading
+  ctx.fillStyle = '#c0cc00';
+  px(15, 31, 3, 22);
+  ctx.fillStyle = '#b0bc00';
+  px(15, 31, 1, 22);
+  ctx.fillStyle = '#c0cc00';
+  px(32, 31, 3, 22);
+  ctx.fillStyle = '#b0bc00';
+  px(34, 31, 1, 22);
+  ctx.fillStyle = '#e0f000';
+  px(22, 32, 6, 18);
+  
+  // Collar
+  ctx.fillStyle = '#c0cc00';
+  px(21, 31, 8, 2);
+  
+  // AFL logo on chest
+  ctx.fillStyle = '#1a1a4a';
+  px(23, 35, 4, 4);
+  ctx.fillStyle = '#ffffff';
+  px(24, 36, 2, 2);
+  
+  // -- ARMS --
+  if(!armsRaised || armTransition < 1){
+    const downAlpha = 1 - armTransition;
+    if(downAlpha > 0){
+      ctx.globalAlpha = alpha * downAlpha;
+      
+      // Left arm down
+      ctx.fillStyle = '#d4e000';
+      px(12, 33, 4, 14);
+      ctx.fillStyle = '#b0bc00';
+      px(12, 33, 1, 14);
+      ctx.fillStyle = '#f0c8a0';
+      px(12, 47, 4, 4);
+      
+      // Right arm down
+      ctx.fillStyle = '#d4e000';
+      px(34, 33, 4, 14);
+      ctx.fillStyle = '#b0bc00';
+      px(37, 33, 1, 14);
+      ctx.fillStyle = '#f0c8a0';
+      px(34, 47, 4, 4);
+      
+      ctx.globalAlpha = alpha;
+    }
+  }
+  
+  if(armsRaised && armTransition > 0){
+    ctx.globalAlpha = alpha * armTransition;
+    
+    if(umpireSignalType === 'goal'){
+      // BOTH arms pointing straight at camera
+      
+      // Left arm
+      ctx.fillStyle = '#d4e000';
+      px(14, 33, 4, 4);
+      px(13, 35, 6, 6);
+      ctx.fillStyle = '#c0cc00';
+      px(13, 35, 2, 6);
+      
+      // Left fist and finger
+      ctx.fillStyle = '#f0c8a0';
+      px(12, 36, 5, 5);
+      px(10, 37, 3, 3);
+      ctx.fillStyle = '#e8b888';
+      px(12, 36, 1, 5);
+      px(10, 37, 1, 3);
+      
+      // Right arm
+      ctx.fillStyle = '#d4e000';
+      px(32, 33, 4, 4);
+      px(31, 35, 6, 6);
+      ctx.fillStyle = '#c0cc00';
+      px(35, 35, 2, 6);
+      
+      // Right fist and finger
+      ctx.fillStyle = '#f0c8a0';
+      px(33, 36, 5, 5);
+      px(37, 37, 3, 3);
+      ctx.fillStyle = '#e8b888';
+      px(37, 36, 1, 5);
+      px(39, 37, 1, 3);
+      
+    } else {
+      // BEHIND - only right arm up, left stays down
+      
+      // Left arm down
+      ctx.fillStyle = '#d4e000';
+      px(12, 33, 4, 14);
+      ctx.fillStyle = '#b0bc00';
+      px(12, 33, 1, 14);
+      ctx.fillStyle = '#f0c8a0';
+      px(12, 47, 4, 4);
+      
+      // Right arm pointing forward
+      ctx.fillStyle = '#d4e000';
+      px(32, 33, 4, 4);
+      px(31, 35, 6, 6);
+      ctx.fillStyle = '#c0cc00';
+      px(35, 35, 2, 6);
+      
+      // Right fist and finger
+      ctx.fillStyle = '#f0c8a0';
+      px(33, 36, 5, 5);
+      px(37, 37, 3, 3);
+      ctx.fillStyle = '#e8b888';
+      px(37, 36, 1, 5);
+      px(39, 37, 1, 3);
+    }
+    
+    ctx.globalAlpha = alpha;
+  }
+  
+  // -- PANTS --
+  ctx.fillStyle = '#1a1a1a';
+  px(18, 53, 6, 14);
+  px(26, 53, 6, 14);
+  ctx.fillStyle = '#252525';
+  px(19, 54, 3, 12);
+  px(27, 54, 3, 12);
+  
+  // -- SHOES --
+  ctx.fillStyle = '#0a0a0a';
+  px(17, 67, 7, 3);
+  px(26, 67, 7, 3);
+  
+  // === 3D TEXT ===
+  if(textProgress > 0){
+    ctx.globalAlpha = alpha * textProgress;
+    
+    const text = umpireSignalType === 'goal' ? 'GOAL!' : 'BEHIND';
+    const letters = {
+      'G': ['  ████  ',' █    █ ','█       ','█  ████ ','█     █ ',' █    █ ','  ████  '],
+      'O': ['  ████  ',' █    █ ','█      █','█      █','█      █',' █    █ ','  ████  '],
+      'A': ['   ██   ','  █  █  ',' █    █ ','████████','█      █','█      █','█      █'],
+      'L': ['█       ','█       ','█       ','█       ','█       ','█       ','████████'],
+      '!': ['   ██   ','   ██   ','   ██   ','   ██   ','   ██   ','        ','   ██   '],
+      'B': ['██████  ','█     █ ','█     █ ','██████  ','█     █ ','█     █ ','██████  '],
+      'E': ['████████','█       ','█       ','██████  ','█       ','█       ','████████'],
+      'H': ['█      █','█      █','█      █','████████','█      █','█      █','█      █'],
+      'I': ['████████','   ██   ','   ██   ','   ██   ','   ██   ','   ██   ','████████'],
+      'N': ['█      █','██     █','█ █    █','█  █   █','█   █  █','█    █ █','█     ██'],
+      'D': ['██████  ','█     █ ','█      █','█      █','█      █','█     █ ','██████  ']
+    };
+    
+    const pixelSize = 4;
+    const letterSpacing = 9 * pixelSize;
+    const totalWidth = text.length * letterSpacing;
+    const startX = cx - totalWidth / 2;
+    const startY = cy + 160;
+    
+    const scale = textProgress < 0.3 ? (textProgress / 0.3) * 1.2 : 
+                  textProgress < 0.5 ? 1.2 - ((textProgress - 0.3) / 0.2) * 0.2 : 1.0;
+    
+    ctx.save();
+    ctx.translate(cx, startY);
+    ctx.scale(scale, scale);
+    ctx.translate(-cx, -startY);
+    
+    for(let c = 0; c < text.length; c++){
+      const letter = letters[text[c]];
+      if(!letter) continue;
+      const letterX = startX + c * letterSpacing;
+      
+      // 3D depth layers
+      for(let depth = 6; depth >= 0; depth--){
+        for(let row = 0; row < letter.length; row++){
+          for(let col = 0; col < letter[row].length; col++){
+            if(letter[row][col] === '█'){
+              const x = letterX + col * pixelSize + depth * 1.5;
+              const y = startY + row * pixelSize + depth * 1.5;
+              
+              if(depth > 0){
+                const shade = Math.floor(40 + depth * 15);
+                ctx.fillStyle = `rgb(${shade}, ${Math.floor(shade * 0.4)}, 0)`;
+              } else {
+                const gradient = row / letter.length;
+                ctx.fillStyle = `rgb(${Math.floor(255 - gradient * 30)}, ${Math.floor(215 - gradient * 50)}, ${Math.floor(gradient * 30)})`;
+              }
+              ctx.fillRect(x, y, pixelSize, pixelSize);
+            }
+          }
+        }
+      }
+    }
+    ctx.restore();
+    ctx.globalAlpha = alpha;
+  }
+  
+  ctx.globalAlpha = 1;
+  if (!isCutaway){
+    ctx.restore();
+  }
+}
+
+// ===================
+// GAME LOGIC
+// ===================
+function updateAimFromMovement(p){
+  const dx = (keys['ArrowRight']?1:0) - (keys['ArrowLeft']?1:0);
+  const dy = (keys['ArrowDown']?1:0) - (keys['ArrowUp']?1:0);
+  if (dx !== 0 || dy !== 0){
+    const u = safeUnit(dx, dy);
+    p.aimX = u.ux; p.aimY = u.uy;
+  } else {
+    if (!Number.isFinite(p.aimX) || !Number.isFinite(p.aimY)){
+      // v97: use current attack direction (teams swap ends)
+      p.aimX = getAttackDir(p.team);
+      p.aimY = 0;
+    }
+  }
+}
+
+function moveControlledPlayer(){
+  const player = getControlledPlayer();
+  if (!player) return;
+  updateAimFromMovement(player);
+
+  const speed = (player.hasBall ? PLAYER_SPEED_WITH_BALL : PLAYER_SPEED_NO_BALL) * playerSpeedFactor(player);
+  if (keys['ArrowLeft'])  player.x -= speed;
+  if (keys['ArrowRight']) player.x += speed;
+  if (keys['ArrowUp'])    player.y -= speed;
+  if (keys['ArrowDown'])  player.y += speed;
+  clampToOval(player);
+}
+
+function attemptTackle(attacker, victim, isPlayerAction){
+  if (!victim || !victim.hasBall) return false;
+  if (gameState === 'markstop' && markCarrier && victim === markCarrier) return false;
+  // Don't allow instant "chain tackles" the moment someone receives it.
+  if (victim.possessFrames < POSSESSION_TACKLE_GRACE_FRAMES) return false;
+  // Don't tackle during the post-score pause.
+  if (scorePauseFrames > 0) return false;
+  // v102: grace after behind / out on the full kick-ins (no tackles for either team)
+  if (kickInGraceFrames > 0) return false;
+  // Centre-bounce safety: prevent instant tackle on the Sloths starter
+  if (kickoffLockFrames > 0 && victim.team === 'sloths') return false;
+
+  const range = isPlayerAction ? PLAYER_TACKLE_RANGE : AI_TACKLE_RANGE;
+  const d = Math.hypot(attacker.x - victim.x, attacker.y - victim.y);
+  if (d > range) return false;
+
+  if (isPlayerAction){
+    if (Math.random() > tackleSuccessChance(attacker, true)) return false;
+    victim.hasBall = false;
+    victim.noPickupFrames = NO_RECLAIM_FRAMES;
+    giveBallTo(attacker);
+    if (attacker.team === 'sloths') switchControlTo(attacker);
+    showMessage('TACKLED!');
+    playSound('tackle');
+    return true;
+  }
+
+  if (attacker.tackleCooldown > 0) return false;
+  // v30: if the ball carrier has been swarmed for long enough, force the tackle.
+  if ((victim.pressureFrames || 0) >= AI_PRESSURE_FORCE_FRAMES){
+    if (d > AI_PRESSURE_FORCE_RANGE) return false;
+    if (Math.random() > tackleSuccessChance(attacker, false)) return false;
+    victim.hasBall = false;
+    victim.noPickupFrames = NO_RECLAIM_FRAMES;
+    giveBallTo(attacker);
+    attacker.tackleCooldown = AI_TACKLE_COOLDOWN;
+    showMessage('TACKLED!');
+    playSound('tackle');
+    return true;
+  }
+  const aiEff = clamp01(getStat(attacker, 'TACKLE') / 100);
+  if (Math.random() < (AI_TACKLE_CHANCE * aiEff) && Math.random() < tackleSuccessChance(attacker, false)){
+    victim.hasBall = false;
+    victim.noPickupFrames = NO_RECLAIM_FRAMES;
+    giveBallTo(attacker);
+    attacker.tackleCooldown = AI_TACKLE_COOLDOWN;
+    showMessage('TACKLED!');
+    playSound('tackle');
+    return true;
+  }
+  attacker.tackleCooldown = 18;
+  return false;
+}
+
+function isContestedAt(x,y, targetTeam){
+  const oppTeam = (targetTeam === 'sloths') ? 'dropbears' : 'sloths';
+  const { dist } = nearestPlayer(oppTeam, x, y);
+  return dist < CONTEST_RADIUS;
+}
+
+function resolveCatch(possessor){
+  // Decide whether this catch is a "mark" (kicks >= 15m)
+  const kickDist = Math.hypot(ball.x - ball.kickStartX, ball.y - ball.kickStartY);
+  const isKick = (ball.kickType === 'pass' || ball.kickType === 'chip' || ball.kickType === 'punt');
+  const isMark = isKick && kickDist >= MARK_MIN_KICK_DIST;
+
+  giveBallTo(possessor);
+  possessor.noPickupFrames = NO_RECLAIM_FRAMES;
+  kickoffLockFrames = 0;
+
+  if (isMark){
+    gameState = 'markstop';
+    markStopFrames = MARK_PROTECT_FRAMES;
+    markX = possessor.x;
+    markCarrier = possessor;
+    markLockFrames = MARK_LOCK_FRAMES;
+    showMessage('MARK!');
+    playSound('mark');
+
+    // v94: Dropbears AI doesn't always play on after marking.
+    // If the mark is uncontested-ish, sometimes hold and take a set kick.
+    if (possessor.team === 'dropbears' && !possessor.controlled){
+      const nearestSlothD = nearestPlayer('sloths', possessor.x, possessor.y).dist;
+      const uncontested = nearestSlothD > (CONTEST_RADIUS * 1.20);
+      possessor.aiMarkHoldFrames = uncontested ? (22 + Math.floor(Math.random()*38)) : (10 + Math.floor(Math.random()*18));
+      possessor.aiMarkWillKick = uncontested ? (Math.random() < 0.70) : (Math.random() < 0.35);
+    }
+  } else {
+    // play on immediately for short kicks / throw-ins
+    if (gameState === 'markstop') gameState = 'playing';
+    markStopFrames = 0;
+    markCarrier = null;
+  }
+}
+
+function aiChooseHandballTarget(from){
+  // Pick a nearby teammate who is (a) roughly in the attacking direction and (b) has more space.
+  const aimY = (OVAL_CY - from.y) * 0.01;
+  const aim = safeUnit(getAttackDir(from.team), aimY);
+  let best = null;
+  let bestScore = -Infinity;
+  const maxDist = handpassMaxDist(from);
+  for (const p of allPlayers){
+    if (p.team !== from.team || p === from) continue;
+    const dx = p.x - from.x;
+    const dy = p.y - from.y;
+    const d = Math.hypot(dx, dy);
+    if (d > maxDist) continue;
+    const u = safeUnit(dx, dy);
+    const dot = u.ux*aim.ux + u.uy*aim.uy;
+    if (dot < 0.05) continue;
+
+    const space = nearestPlayer('sloths', p.x, p.y).dist;
+    const score = (space * 1.25) - (d * 0.55) + (dot * 35);
+    if (score > bestScore){
+      bestScore = score;
+      best = p;
+    }
+  }
+  return best;
+}
+
+function aiChoosePassTarget(from){
+  // Choose an open teammate ahead, at a "kickable" distance.
+  const aimY = (OVAL_CY - from.y) * 0.01;
+  const aim = safeUnit(getAttackDir(from.team), aimY);
+  let best = null;
+  let bestScore = -Infinity;
+  const atk = getAttackDir(from.team);
+  const oppTeam = (from.team === 'sloths') ? 'dropbears' : 'sloths';
+  for (const p of allPlayers){
+    if (p.team !== from.team || p === from) continue;
+    const dx = p.x - from.x;
+    const dy = p.y - from.y;
+    const d = Math.hypot(dx, dy);
+    if (d < 220 || d > 650) continue;
+    const u = safeUnit(dx, dy);
+    const dot = u.ux*aim.ux + u.uy*aim.uy;
+    if (dot < 0.15) continue;
+
+    const space = nearestPlayer(oppTeam, p.x, p.y).dist;
+    const fwd = dx * atk; // positive = toward attacking goal
+    const backPenalty = Math.max(0, -fwd) * 1.25;
+    const fwdBonus = Math.max(0, fwd) * 0.22; // strong drive toward goal
+    const score = (space * 1.45) + fwdBonus - backPenalty - (d * 0.22) + (dot * 40);
+    if (score > bestScore){
+      bestScore = score;
+      best = p;
+    }
+  }
+  // Require some minimum space so we don't bomb it to a contest every time.
+  if (best && bestScore < 110) return null;
+  return best;
+}
+
+// v94: AI set kick from a mark (no play-on)
+function aiKickFromMark(p){
+  if (!p || !p.hasBall) return;
+
+  // End the protected mark state when the kick is taken.
+  if (gameState === 'markstop'){
+    gameState = 'playing';
+    markStopFrames = 0;
+    markCarrier = null;
+    markLockFrames = 0;
+  }
+
+  // If in range, sometimes take the set shot.
+  if (isInPlayerGoalRange(p) && Math.random() < 0.25){
+    enterGoalKick(p, true);
+    return;
+  }
+
+  // Try to find an open downfield option.
+  const target = aiChoosePassTarget(p);
+  if (target){
+    const dx = target.x - ball.x;
+    const dy = target.y - ball.y;
+    const dist = Math.hypot(dx, dy);
+    const short = dist < 320;
+
+    p.hasBall = false;
+    ball.free = true;
+    ball.kickType = short ? 'chip' : 'pass';
+    playSound(short ? 'chip' : 'kick');
+    ball.lastKickedBy = p.team;
+    ball.kickStartX = ball.x;
+    ball.kickStartY = ball.y;
+    ball.intendedTarget = target;
+
+    const flight = short
+      ? planFlightFrames(dist, CHIP_AIR_SPEED, CHIP_FRAMES_MIN, CHIP_FRAMES_MAX)
+      : planFlightFrames(dist, PASS_AIR_SPEED, PASS_FRAMES_MIN, PASS_FRAMES_MAX);
+    const maxH = short ? CHIP_HEIGHT : (70 + Math.min(70, dist * 0.14));
+    startTargetedFlight(target.x, target.y, flight, maxH);
+
+    contest.active = true;
+    contest.target = target;
+    contest.kickerTeam = p.team;
+    contest.defender = nearestPlayer((p.team==='sloths') ? 'dropbears' : 'sloths', target.x, target.y).best;
+    return;
+  }
+
+  // Fallback: punt downfield in attack direction.
+  const aimY = (OVAL_CY - p.y) * 0.01;
+  const dir = safeUnit(getAttackDir(p.team), aimY);
+  const dist = 560 + Math.random()*220;
+
+  p.hasBall = false;
+  ball.free = true;
+  ball.kickType = 'punt';
+  playSound('punt');
+  ball.lastKickedBy = p.team;
+  ball.kickStartX = ball.x;
+  ball.kickStartY = ball.y;
+  ball.intendedTarget = null;
+
+  const toX = ball.x + dir.ux * dist;
+  const toY = ball.y + dir.uy * dist;
+  const flight = planFlightFrames(dist, 8.0, 55, 95);
+  startTargetedFlight(toX, toY, flight, PUNT_HEIGHT);
+  ball.landingMarkerStartHeight = ball.flightMaxHeight;
+}
+
+// Aimed, sensible mark logic:
+// - If landing zone is open: auto mark (no jump needed).
+// - If contested: only someone who is jumping AND near the ball gets the mark.
+function tryResolveMarkWhileInAir(){
+  // Marking simplified: no in-air grabs. Catch is resolved on landing only.
+  return;
+}
+
+// ===================
+// KICKING
+// ===================
+function performChargedKick(){
+  const player = getControlledPlayer();
+  if (!player || !player.hasBall || !(gameState === 'playing' || gameState === 'markstop')) return;
+
+  // If you kick from a mark, resume normal play immediately.
+  if (gameState === 'markstop'){
+    gameState = 'playing';
+    markStopFrames = 0;
+    markCarrier = null;
+    markLockFrames = 0;
+  }
+
+  const frames = kickChargeFrames;
+  const chargeT = Math.min(1, frames / KICK_CHARGE_MAX_FRAMES);
+  // v39: aim should always respect current arrow keys (even if you didn't "move" first)
+  const mx = (keys['ArrowRight']?1:0) - (keys['ArrowLeft']?1:0);
+  const my = (keys['ArrowDown']?1:0) - (keys['ArrowUp']?1:0);
+  const dir = (mx !== 0 || my !== 0) ? safeUnit(mx, my) : safeUnit(player.aimX, player.aimY);
+
+  // clear in-flight state
+  ball.flightFramesLeft = 0;
+  ball.flightTotalFrames = 0;
+  ball.flightMaxHeight = 0;
+  ball.intendedTarget = null;
+  ball.softCatchTarget = null;
+  ball.softCatchFramesLeft = 0;
+  ball.gatherLockFrames = 0;
+  ball.kickType = null;
+  endContest();
+
+  // TAP = chip kick (short)
+  if (frames <= KICK_TAP_FRAMES){
+    // Tap = shortest kick: nearest teammate in the aimed direction.
+    let target = findNearestTeammateAimed(player, dir.ux, dir.uy);
+    if (!target){
+      // If you're aiming somewhere empty, still pass to the nearest teammate (never "to yourself").
+      target = allPlayers
+        .filter(p => p.team === player.team && p !== player)
+        .map(p => ({ p, d: Math.hypot(p.x - player.x, p.y - player.y) }))
+        .sort((a,b)=>a.d-b.d)[0]?.p || null;
+    }
+    // v85: if the nearest target is extremely close, don't "chip to yourself"
+    if (target){
+      const d = Math.hypot(target.x - ball.x, target.y - ball.y);
+      if (d < CHIP_MIN_TARGET_DIST) target = null;
+    }
+
+    player.hasBall = false;
+    ball.free = true;
+    ball.kickType = 'chip';
+    ball.lastKickedBy = player.team;
+    ball.kickStartX = ball.x;
+    ball.kickStartY = ball.y;
+
+    if (target){
+      const dx = target.x - ball.x;
+      const dy = target.y - ball.y;
+      const dist = Math.hypot(dx, dy);
+      const flight = planFlightFrames(dist, CHIP_AIR_SPEED, CHIP_FRAMES_MIN, CHIP_FRAMES_MAX);
+      startTargetedFlight(target.x, target.y, flight, CHIP_HEIGHT);
+      ball.intendedTarget = target;
+
+      // Control switches to receiver, so you can jump if you want.
+      if (player.team === 'sloths') ball.chosenSlothsInterceptorName = target.name;
+      switchControlTo(target);
+
+      // If it's open, we allow auto mark; if contested you can jump.
+      contest.active = true; // lightweight: enables receiver/defender to actually converge on ball
+      contest.target = target;
+      contest.kickerTeam = player.team;
+      contest.defender = nearestPlayer((player.team==='sloths') ? 'dropbears' : 'sloths', target.x, target.y).best;
+    } else {
+      // No sensible receiver: chip into space a minimum distance
+      const dist = CHIP_MIN_TARGET_DIST;
+      const toX = ball.x + dir.ux * dist;
+      const toY = ball.y + dir.uy * dist;
+      const flight = planFlightFrames(dist, CHIP_AIR_SPEED, CHIP_FRAMES_MIN, CHIP_FRAMES_MAX);
+      startTargetedFlight(toX, toY, flight, CHIP_HEIGHT);
+      ball.intendedTarget = null;
+    }
+
+    playSound('chip');
+    kickChargeFrames = 0;
+    return;
+  }
+
+  // FULL PUNT (long kick, not aimed at anyone)
+  if (chargeT >= KICK_PUNT_FULL_THRESHOLD){
+    player.hasBall = false;
+    playSound('punt');
+    ball.free = true;
+    ball.kickType = 'punt';
+    ball.lastKickedBy = player.team;
+    ball.kickStartX = ball.x;
+    ball.kickStartY = ball.y;
+    ball.intendedTarget = null;
+
+    // ~60-70m max (FIFTY_METRE=450 => 1m≈9 units)
+    const dist = (540 + Math.random()*90) * 1.20 * longKickMult(player); // v61: LONG_KICK stat
+    const toX = ball.x + dir.ux * dist;
+    const toY = ball.y + dir.uy * dist;
+    const flight = planFlightFrames(dist, 8.0, 55, 95);
+    startTargetedFlight(toX, toY, flight, PUNT_HEIGHT);
+    ball.landingMarkerStartHeight = ball.flightMaxHeight;
+
+    // v44: choose/switch based on the SAME drop zone used by the circle + mark-award.
+    const dp = predictDropZoneCenter();
+    const chase = nearestPlayer(player.team, dp.x, dp.y).best;
+    if (chase){
+      if (player.team === 'sloths'){
+        ball.chosenSlothsInterceptorName = chase.name;
+        ball.airChaseFrames = 0;
+      }
+      switchControlTo(chase);
+    }
+
+    kickChargeFrames = 0;
+    return;
+  }
+
+  // PASS kick: short/medium should pick a sensible teammate in the aimed direction.
+  // We bias desired distance by charge and then pick the best match.
+  const desiredDist = PASS_MIN_DESIRED + (PASS_MAX_DESIRED - PASS_MIN_DESIRED) * chargeT;
+  let target = findTeammateForPassKick(player, desiredDist, dir.ux, dir.uy);
+  // If no good match, fall back to "nearest in direction" within a reasonable cone.
+  if (!target){
+    const cap = 260 + chargeT * 420;
+    target = findNearestTeammateInDirection(player, cap, dir.ux, dir.uy, 0.20);
+  }
+
+  player.hasBall = false;
+  playSound('kick');
+  ball.free = true;
+  ball.kickType = 'pass';
+  ball.lastKickedBy = player.team;
+  ball.kickStartX = ball.x;
+  ball.kickStartY = ball.y;
+
+  if (target){
+    const dx = target.x - ball.x;
+    const dy = target.y - ball.y;
+    const dist = Math.hypot(dx, dy);
+    const flight = planFlightFrames(dist, PASS_AIR_SPEED, PASS_FRAMES_MIN, PASS_FRAMES_MAX);
+    const maxH = PASS_HEIGHT_MIN + (PASS_HEIGHT_MAX - PASS_HEIGHT_MIN) * chargeT;
+    startTargetedFlight(target.x, target.y, flight, maxH);
+    ball.intendedTarget = target;
+
+    // Switch control immediately to receiver (your request)
+    if (player.team === 'sloths') ball.chosenSlothsInterceptorName = target.name;
+    switchControlTo(target);
+
+    contest.active = true;
+    contest.target = target;
+    contest.kickerTeam = player.team;
+    contest.defender = nearestPlayer((player.team==='sloths') ? 'dropbears' : 'sloths', target.x, target.y).best;
+  } else {
+    // No target: mid-distance kick along aim
+    const dist = (360 + chargeT * 420) * longKickMult(player); // v61: LONG_KICK stat
+    const toX = ball.x + dir.ux * dist;
+    const toY = ball.y + dir.uy * dist;
+    const flight = planFlightFrames(dist, PASS_AIR_SPEED, PASS_FRAMES_MIN, PASS_FRAMES_MAX);
+    const maxH = PASS_HEIGHT_MIN + (PASS_HEIGHT_MAX - PASS_HEIGHT_MIN) * chargeT;
+    startTargetedFlight(toX, toY, flight, maxH);
+  }
+
+  kickChargeFrames = 0;
+}
+
+// ===================
+// GOAL KICK METER
+// ===================
+let goalKickMeter = 0;
+let goalKickDirection = 1;
+let goalKickSpeed = 3.0;
+let goalKickShooter = null;
+let goalKickAuto = false;
+let goalKickAutoDelay = 0;
+let goalKickAutoTarget = 0;
+// v29: ensure AI goal shots resolve quickly
+let goalKickAutoMaxFrames = 0;
+
+function enterGoalKick(shooter, auto=false){
+  const p = shooter || getControlledPlayer();
+  if (!p) return;
+
+  gameState = 'goalkick';
+  goalKickShooter = p;
+  goalKickAuto = !!auto;
+  // Give time for the meter to be seen.
+  goalKickAutoDelay = auto ? 18 : 0;
+  goalKickAutoMaxFrames = auto ? 60 : 0;
+  // AI aims near the middle; longer distance = more variance.
+  if (auto){
+    const goalX = getGoalXForTeam(p.team);
+    const distToGoal = Math.max(0, Math.abs(p.x - goalX));
+    const miss = clamp(distToGoal / FIFTY_METRE, 0, 1);
+    // v63: AI GOAL_KICK stat improves accuracy (higher = tighter target spread => more goals).
+    const skill = clamp(getStat(p, 'GOAL_KICK') / 100, 0, 1);
+    // v70: stronger stat impact (more variance between good/bad shots)
+    const spread = (62 + miss*82) * (1.40 - 1.05*skill); // skill 1.0 => ~0.25x spread
+    goalKickAutoTarget = clamp((Math.random()-0.5) * spread, -95, 95);
+  }
+  goalKickMeter = -100;
+  goalKickDirection = 1;
+
+  const gx = getGoalXForTeam(p.team);
+  const distToGoal = Math.max(0, Math.min(FIFTY_METRE, Math.abs(p.x - gx)));
+  // v25+: harder set shots from awkward angles.
+  // Straight in front (small y-offset) is unchanged; wider angles speed up the meter.
+  const xOff = Math.max(1, Math.abs(p.x - gx));
+  const yOff = Math.abs(p.y - OVAL_CY);
+  const ang = Math.atan2(yOff, xOff);                 // 0..~pi/2
+  const angN = clamp(ang / (Math.PI/2), 0, 1);        // 0 straight, 1 dead angle
+  const angleMult = 1 + angN * 0.65;
+
+  // Base difficulty by distance (existing), then apply angle multiplier.
+  // v27: +40% meter speed across the board
+  goalKickSpeed = (1.0 + (distToGoal / FIFTY_METRE) * 3.9) * 3.5 * angleMult;
+  // v61: GOAL_KICK stat — higher skill => slower meter
+  goalKickSpeed *= goalKickMeterMult(p);
+
+  keys['Space'] = false;
+  justPressed['Space'] = false;
+}
+
+function updateGoalKick(){
+  goalKickMeter += goalKickDirection * goalKickSpeed;
+  if (goalKickMeter > 100){ goalKickMeter = 100; goalKickDirection = -1; }
+  if (goalKickMeter < -100){ goalKickMeter = -100; goalKickDirection = 1; }
+
+  if (goalKickAuto){
+    if (goalKickAutoMaxFrames > 0) goalKickAutoMaxFrames--;
+    if (goalKickAutoDelay > 0) goalKickAutoDelay--;
+    else {
+      // "Press" when the meter passes the target.
+      if (Math.abs(goalKickMeter - goalKickAutoTarget) < (goalKickSpeed + 1.2)){
+        executeGoalKick();
+        return;
+      }
+    }
+    // Hard cap: never let the AI meter sit on screen longer than ~1s
+    if (goalKickAutoMaxFrames === 0){
+      executeGoalKick();
+      return;
+    }
+    // v25+: ignore human input while AI is shooting
+    return;
+  }
+  // Only allow Space to trigger if the shooter is the human-controlled player.
+  if (goalKickShooter && goalKickShooter.controlled && justPressed['Space']) executeGoalKick();
+}
+
+function executeGoalKick(){
+  const player = goalKickShooter || getControlledPlayer();
+  if (!player || !player.hasBall) { gameState='playing'; return; }
+
+  // Turn the meter result into an actual kick we can see.
+  const team = player.team;
+  const atk = getAttackDir(team);
+  // v27: ensure the shot starts from a legal in-field position.
+  // This prevents the "GOAL then OUT OF BOUNDS/ON THE FULL" bug caused by the carry offset
+  // placing the ball past the goal line before the flight begins.
+  ball.x = (atk === -1) ? Math.max(player.x, LEFT_GOAL_X + 6) : Math.min(player.x, RIGHT_GOAL_X - 6);
+  ball.y = player.y;
+  ball.vx = 0;
+  ball.vy = 0;
+  clampToOval(ball);
+
+  const targetX = (atk === -1) ? (LEFT_GOAL_X - 70) : (RIGHT_GOAL_X + 70);
+  const yMid = (GOAL_Y_TOP + GOAL_Y_BOT) / 2;
+  let yAim = yMid + (goalKickMeter / 100) * (BEHIND_GAP * 0.55);
+
+  const acc = Math.abs(goalKickMeter);
+  // v100: lock in the intended result so scoring always matches the meter.
+  ball.goalkickPlannedResult = (acc < 35) ? 'goal' : (acc < 65) ? 'behind' : 'onfull';
+
+  if (ball.goalkickPlannedResult === 'goal'){
+    // Goal: keep inside goal posts
+    yAim = clamp(yAim, GOAL_Y_TOP + 8, GOAL_Y_BOT - 8);
+  } else if (ball.goalkickPlannedResult === 'behind'){
+    // Behind: keep between behind posts but *outside* goal area
+    yAim = clamp(yAim, BEHIND_Y_TOP + 8, BEHIND_Y_BOT - 8);
+    if (yAim > GOAL_Y_TOP && yAim < GOAL_Y_BOT){
+      yAim = (goalKickMeter >= 0) ? (GOAL_Y_BOT + 18) : (GOAL_Y_TOP - 18);
+      yAim = clamp(yAim, BEHIND_Y_TOP + 8, BEHIND_Y_BOT - 8);
+    }
+  } else {
+    // Out on the full: aim clearly wide
+    yAim = (goalKickMeter >= 0) ? (BEHIND_Y_BOT + 140) : (BEHIND_Y_TOP - 140);
+  }
+
+  player.hasBall = false;
+  ball.free = true;
+  ball.lastKickedBy = team;
+  ball.kickType = 'goalkick';
+  ball.kickStartX = ball.x;
+  ball.kickStartY = ball.y;
+  ball.intendedTarget = null;
+
+  const dist = Math.hypot(targetX - ball.x, yAim - ball.y);
+  // v29: AI goal shots should resolve fast (<= ~1s)
+  const isAIShot = !player.controlled;
+  const flight = isAIShot
+    ? planFlightFrames(dist, 11.0, 18, 50)
+    : planFlightFrames(dist, 5.2, 55, 95);
+  startTargetedFlight(targetX, yAim, flight, 120);
+
+  // Freeze the rest of play until the shot resolves.
+  gameState = 'goalkick_flight';
+  goalKickShooter = null;
+  goalKickAuto = false;
+}
+
+// ===================
+// CAMERA + CONTROL SWITCHING
+// ===================
+function updateCamera(){
+  // During the goal-shot meter, camera should follow the shooter (player or AI).
+  if (gameState === 'goalkick' && goalKickShooter){
+    const tx = goalKickShooter.x;
+    const ty = goalKickShooter.y;
+    cameraX += (tx - 400 - cameraX) * 0.12;
+    cameraY += (ty - 300 - cameraY) * 0.12;
+    cameraX = Math.max(0, Math.min(FIELD_WIDTH - 800, cameraX));
+    const minY = (OVAL_CY - OVAL_B) - 60;
+    const maxY = (OVAL_CY + OVAL_B) - 540;
+    cameraY = Math.max(minY, Math.min(maxY, cameraY));
+    return;
+  }
+
+  const focus = getControlledPlayer();
+  const tx = (focus && focus.hasBall) ? focus.x : ball.x;
+  const ty = (focus && focus.hasBall) ? focus.y : ball.y;
+
+  cameraX += (tx - 400 - cameraX) * 0.07;
+  cameraY += (ty - 300 - cameraY) * 0.07;
+
+  cameraX = Math.max(0, Math.min(FIELD_WIDTH - 800, cameraX));
+  const minY = (OVAL_CY - OVAL_B) - 60;
+  const maxY = (OVAL_CY + OVAL_B) - 540;
+  cameraY = Math.max(minY, Math.min(maxY, cameraY));
+}
+
+function autoSwitchControl(){
+  const ctrl = getControlledPlayer();
+  if (!ctrl) return;
+
+  const enemyKickInAir =
+    isKickInAir() &&
+    (ball.lastKickedBy && ball.lastKickedBy !== 'sloths');
+
+  const slothsKickInAir =
+    isKickInAir() &&
+    (ball.lastKickedBy === 'sloths') &&
+    !ball.intendedTarget;
+
+  // v35: lock-on to ONE interceptor early and stick to them (no jitter).
+  // Also: don't rely on team AI choosing it; always hand control to the chosen player immediately.
+  if (enemyKickInAir && !ctrl.hasBall){
+    if (!ball.airChaseId) ball.airChaseId = airChaseIdCounter++;
+    ball.airChaseFrames = (ball.airChaseFrames || 0) + 1;
+    const drop = predictDropZoneCenter();
+
+    // Pick (or briefly re-pick) the interceptor early in the flight.
+    const bestNow = nearestPlayer('sloths', drop.x, drop.y).best;
+    if (!ball.chosenSlothsInterceptorName){
+      ball.chosenSlothsInterceptorName = bestNow?.name || null;
+    } else if (ball.airChaseFrames <= 18 && bestNow){
+      const locked = allPlayers.find(p => p.team === 'sloths' && p.name === ball.chosenSlothsInterceptorName);
+      const dLocked = locked ? Math.hypot(locked.x - drop.x, locked.y - drop.y) : Infinity;
+      const dBest = Math.hypot(bestNow.x - drop.x, bestNow.y - drop.y);
+      if (dBest + 45 < dLocked){
+        ball.chosenSlothsInterceptorName = bestNow.name;
+      }
+    }
+    const locked = ball.chosenSlothsInterceptorName
+      ? allPlayers.find(p => p.team === 'sloths' && p.name === ball.chosenSlothsInterceptorName)
+      : null;
+    if (locked){
+      // If we somehow started controlling the wrong player, correct it immediately.
+      // This is intentionally aggressive so you always control the receiver.
+      if (!locked.controlled) switchControlTo(locked);
+      controlSwitchCooldown = 12;
+      return;
+    }
+  }
+
+  // v44: on YOUR kicks, keep you on the true receiver for the drop zone.
+  if (slothsKickInAir && !ctrl.hasBall){
+    const drop = predictDropZoneCenter();
+    const bestNow = nearestPlayer('sloths', drop.x, drop.y).best;
+    if (!ball.chosenSlothsInterceptorName){
+      ball.chosenSlothsInterceptorName = bestNow?.name || null;
+    }
+    const locked = ball.chosenSlothsInterceptorName
+      ? allPlayers.find(p => p.team === 'sloths' && p.name === ball.chosenSlothsInterceptorName)
+      : null;
+    if (locked && !locked.controlled){
+      switchControlTo(locked);
+      controlSwitchCooldown = 12;
+      return;
+    }
+  }
+
+  // v32: while an enemy kick is in the air, always give you the true interceptor
+  // (closest Sloths player to the landing spot), even if the normal cooldown would block it.
+  // This fixes the case where the right teammate runs under it but you control someone else nearby.
+  // (handled above by lock-on logic)
+
+  if (controlSwitchCooldown > 0) { controlSwitchCooldown--; return; }
+
+  const slothCarrier = allPlayers.find(p => p.team==='sloths' && p.hasBall);
+  if (slothCarrier && !slothCarrier.controlled){
+    switchControlTo(slothCarrier);
+    return;
+  }
+
+  // If Dropbears have it, control the closest Sloths player to the carrier.
+  const bearCarrier = allPlayers.find(p => p.team==='dropbears' && p.hasBall);
+  if (bearCarrier){
+    const candidate = nearestPlayer('sloths', bearCarrier.x, bearCarrier.y).best;
+    if (candidate && !candidate.controlled) {
+      switchControlTo(candidate);
+      return;
+    }
+  }
+
+  if (ball.intendedTarget && ball.intendedTarget.team === 'sloths' && !ball.intendedTarget.controlled){
+    switchControlTo(ball.intendedTarget);
+    return;
+  }
+
+  if (ball.free && !ball.intendedTarget){
+    const candidate = nearestPlayer('sloths', ball.x, ball.y).best;
+    if (candidate && !candidate.controlled){
+      const d = Math.hypot(candidate.x - ball.x, candidate.y - ball.y);
+      if (d < 310 || ball.height < 18){
+        switchControlTo(candidate);
+        return;
+      }
+    }
+  }
+}
+
+// ===================
+// TEAM AI
+// ===================
+function updateTeamAI(){
+  const slothCarrier = allPlayers.find(p => p.team==='sloths' && p.hasBall);
+  const bearCarrier  = allPlayers.find(p => p.team==='dropbears' && p.hasBall);
+
+  const hotX = ball.x;
+  const hotY = ball.y;
+
+  // jump progression
+  for (const p of allPlayers){
+    if (p.jumpFrames > 0){
+      p.jumpT = Math.min(1, p.jumpT + (1 / JUMP_TOTAL_FRAMES));
+      p.jumpFrames--;
+      if (p.jumpFrames === 0) p.jumpT = 0;
+    }
+  }
+
+  // If the ball is in the air, send a *small* contest pack (max 3 total).
+  // v38: legacy punts don't decrement flightFramesLeft, so "inAir" must be based on actual height/flight.
+  const inAir =
+    ball.free &&
+    (ball.kickType==='pass' || ball.kickType==='chip' || ball.kickType==='punt' || ball.kickType==='throwin') &&
+    (
+      (ball.flightTotalFrames > 0 && ball.flightT < 1) ||
+      (ball.height > 6)
+    );
+
+  const nearestN = (team, x, y, n) => {
+    return allPlayers
+      .filter(pp => pp.team === team && !pp.hasBall)
+      .map(pp => ({ pp, d: Math.hypot(pp.x - x, pp.y - y) }))
+      .sort((a,b)=>a.d-b.d)
+      .slice(0, n)
+      .map(o => o.pp);
+  };
+
+  let airPack = new Set();
+  if (inAir){
+    if (!ball.airChaseId) ball.airChaseId = airChaseIdCounter++;
+    // v42: chase the same drop zone used by marking + auto-switch
+    const dp = predictDropZoneCenter();
+    const dropX = dp.x, dropY = dp.y;
+    const kickTeam = (ball.lastKickedBy === 'sloths' || ball.lastKickedBy === 'dropbears') ? ball.lastKickedBy : null;
+    const oppTeam = kickTeam ? ((kickTeam === 'sloths') ? 'dropbears' : 'sloths') : null;
+
+    if (kickTeam && oppTeam){
+      const kickDist = (ball.flightTotalFrames > 0 && ball.flightT < 1)
+        ? Math.hypot(ball.flightToX - ball.flightFromX, ball.flightToY - ball.flightFromY)
+        : Math.hypot(ball.x - ball.kickStartX, ball.y - ball.kickStartY);
+      const isMarkableKick = kickDist >= MARK_MIN_KICK_DIST;
+      // v95: prevent double-AI jitter — only ONE primary marker per team goes to the mark.
+      const kickPrimary = nearestN(kickTeam, dropX, dropY, 1);
+      const oppPrimary = nearestN(oppTeam, dropX, dropY, 1);
+      if (kickPrimary[0]) airPack.add(kickPrimary[0]);
+      if (oppPrimary[0]) airPack.add(oppPrimary[0]);
+
+      // If it's a genuinely contested markable kick, add ONE extra opponent (max 3 total).
+      if (isMarkableKick){
+        const opp2 = nearestN(oppTeam, dropX, dropY, 2)[1];
+        const dOther = nearestPlayer(oppTeam, dropX, dropY).dist;
+        if (opp2 && dOther < (CONTEST_RADIUS * 1.15)) airPack.add(opp2);
+      }
+    } else {
+      // Throw-in: 1 from each team + one extra closest overall
+      for (const pp of nearestN('sloths', dropX, dropY, 1)) airPack.add(pp);
+      for (const pp of nearestN('dropbears', dropX, dropY, 1)) airPack.add(pp);
+      const extra = allPlayers
+        .filter(pp => !pp.hasBall)
+        .map(pp => ({ pp, d: Math.hypot(pp.x - dropX, pp.y - dropY) }))
+        .sort((a,b)=>a.d-b.d)[0]?.pp;
+      if (extra) airPack.add(extra);
+    }
+  }
+
+  // Loose ball swarms: only 1 chaser each team (plus the human controlled player).
+  let looseChasersSloths = new Set();
+  let looseChasersBears = new Set();
+  if (ball.free && !inAir && !ball.intendedTarget){
+    // clear aerial chase id once play is grounded
+    ball.airChaseId = 0;
+    ball.chosenSlothsInterceptorName = null;
+    const cs = nearestN('sloths', hotX, hotY, 1);
+    const cb = nearestN('dropbears', hotX, hotY, 1);
+    if (cs[0]) looseChasersSloths.add(cs[0]);
+    if (cb[0]) looseChasersBears.add(cb[0]);
+  }
+
+  for (const p of allPlayers){
+    if (p.hasBall) continue;
+
+    // v102: kick-in grace — defenders hold off for 5 seconds after behind/on-the-full
+    const carrier = slothCarrier || bearCarrier;
+    if (kickInGraceFrames > 0 && carrier && p.team !== carrier.team){
+      const d = Math.hypot(p.x - carrier.x, p.y - carrier.y);
+      const stand = 125;
+      if (d < stand){
+        const u = safeUnit(p.x - carrier.x, p.y - carrier.y);
+        if (!p.controlled){
+          p.x += u.ux * (AI_SPEED_ZONE * 1.25);
+          p.y += u.uy * (AI_SPEED_ZONE * 1.25);
+          clampToOval(p);
+        }
+        continue;
+      }
+    }
+
+    // Mark protection: defenders must stand off.
+    if (gameState === 'markstop' && markCarrier){
+      if (p.team !== markCarrier.team){
+        const d = Math.hypot(p.x - markCarrier.x, p.y - markCarrier.y);
+        if (d < MARK_STANDOFF_DIST){
+          const u = safeUnit(p.x - markCarrier.x, p.y - markCarrier.y);
+          if (!p.controlled){
+            p.x += u.ux * (AI_SPEED_ZONE * 1.2);
+            p.y += u.uy * (AI_SPEED_ZONE * 1.2);
+            clampToOval(p);
+          }
+        } else if (d < (MARK_STANDOFF_DIST + 26)){
+          // v34: stop shuffling back into range (reduces jitter during markstop)
+          // Hold position in this buffer zone.
+        } else {
+          // Keep shape, do NOT engage until play on.
+          const myCarrier = null;
+          const ft = formationTarget(p, myCarrier);
+          if (!p.controlled) moveToward(p, ft.tx, ft.ty, AI_SPEED_ZONE);
+        }
+        continue;
+      }
+    }
+
+    if (inAir){
+      if (airPack.has(p)){
+        const chaseSpd = AI_SPEED_CHASE * 1.05;
+        const dp = predictDropZoneCenter();
+        const dropX = dp.x, dropY = dp.y;
+        const enemyKickToSloths = (ball.lastKickedBy && ball.lastKickedBy !== 'sloths');
+        const slothsKickToSloths = (ball.lastKickedBy === 'sloths');
+        // v39: if it's an enemy kick, Sloths (your teammates) should NOT auto-run under it at all.
+        // Only the human-controlled player should chase/position, otherwise it feels like the AI is taking the mark for you.
+        if (enemyKickToSloths && p.team === 'sloths' && !p.controlled){
+          // v48: don't freeze — move into a sensible supporting position near the drop
+          // but OUTSIDE the drop-zone circle so you aren't "auto-marking" for the human.
+          const r = dropZoneRadiusAt(dropY);
+          if (p.airChaseId !== ball.airChaseId){
+            p.airChaseId = ball.airChaseId;
+            const a = Math.random() * Math.PI * 2;
+            const rr = r + 90 + Math.random()*45;
+            p.airOffX = Math.cos(a) * rr;
+            p.airOffY = Math.sin(a) * rr;
+          }
+          let tx = dropX + p.airOffX;
+          let ty = dropY + p.airOffY;
+          // Bring mids/ruck into the centre corridor so you don't get outnumbered.
+          if (p.band === 'mid' || p.band === 'ruck'){
+            tx = tx * 0.55 + OVAL_CX * 0.45;
+            ty = ty * 0.70 + OVAL_CY * 0.30;
+          }
+          moveToward(p, tx, ty, AI_SPEED_ZONE * 1.10);
+          continue;
+        }
+        // v47: on YOUR kicks, non-controlled Sloths should still MOVE (lead/support),
+        // but stay OUTSIDE the drop-zone so they don't physically "take the mark for you".
+        if (slothsKickToSloths && p.team === 'sloths' && !p.controlled){
+          const r = dropZoneRadiusAt(dropY);
+          const attackDir = getAttackDir('sloths');
+
+          // Pick a stable per-flight support offset (not random every frame).
+          if (p.airChaseId !== ball.airChaseId){
+            p.airChaseId = ball.airChaseId;
+            const a = Math.random() * Math.PI * 2;
+            const rr = r + 95 + Math.random()*55;
+            p.airOffX = Math.cos(a) * rr;
+            p.airOffY = Math.sin(a) * rr;
+          }
+
+          // Bias by band so support looks "sensible".
+          let bx = 0, by = 0;
+          if (p.band === 'fwd') bx = attackDir * (r + 120);
+          else if (p.band === 'back') bx = -attackDir * (r + 120);
+          else by = (Math.random() < 0.5 ? -1 : 1) * (r + 110);
+
+          moveToward(p, dropX + p.airOffX + bx, dropY + p.airOffY + by, AI_SPEED_ZONE * 1.05);
+          continue;
+        }
+        // v31+: AI shouldn't be perfectly under it every time IF contested.
+        // If uncontested, they should go straight to the drop and take the mark.
+        if (p.team === 'dropbears'){
+          const slothDistToDrop = nearestPlayer('sloths', dropX, dropY).dist;
+          const uncontested = slothDistToDrop > (CONTEST_RADIUS * 1.25);
+          if (p.airChaseId !== ball.airChaseId){
+            p.airChaseId = ball.airChaseId;
+            p.airWanderTimer = 6 + Math.floor(Math.random()*8);
+            // v94: if it's uncontested, stand right under it (mark it).
+            // Only "hunt/wander" when there's pressure.
+            if (uncontested){
+              p.airOffX = 0;
+              p.airOffY = 0;
+            } else {
+              // v48: give each Dropbear a stable offset so two don't stack/jitter on the same pixel.
+              const a0 = Math.random() * Math.PI * 2;
+              const rr0 = 12 + Math.random()*14;
+              p.airOffX = Math.cos(a0) * rr0;
+              p.airOffY = Math.sin(a0) * rr0;
+            }
+          }
+          if (uncontested){
+            // v94: never wander when uncontested; stay right under it.
+            p.airOffX = 0;
+            p.airOffY = 0;
+          } else {
+            // v95: contested = jostle/zigzag near the drop (don't run away)
+            const opp = nearestPlayer('sloths', dropX, dropY).best;
+            const od = opp ? Math.hypot(opp.x - dropX, opp.y - dropY) : Infinity;
+            const bumpR = 22;
+            // Bias toward the opponent to "body" them off the spot.
+            let bx = 0, by = 0;
+            if (opp && od < (CONTEST_RADIUS * 1.15)){
+              const u = safeUnit(opp.x - dropX, opp.y - dropY);
+              bx = u.ux * bumpR;
+              by = u.uy * bumpR;
+            }
+            // Add a perpendicular zig-zag so it looks like jockeying rather than fleeing.
+            p.airWanderTimer--;
+            if (p.airWanderTimer <= 0){
+              p.airWanderTimer = 6 + Math.floor(Math.random()*9);
+              const flip = (Math.random() < 0.5) ? -1 : 1;
+              // perpendicular to bump vector (or to attack dir if no opponent)
+              let px = 0, py = 0;
+              if (bx !== 0 || by !== 0){
+                const pu = safeUnit(-by, bx);
+                px = pu.ux * 14 * flip;
+                py = pu.uy * 14 * flip;
+              } else {
+                px = 0;
+                py = 14 * flip;
+              }
+              p.airOffX = clamp(bx + px, -34, 34);
+              p.airOffY = clamp(by + py, -34, 34);
+            } else {
+              // keep last offset (stable jockeying)
+            }
+          }
+        } else {
+          p.airChaseId = ball.airChaseId;
+          p.airOffX = 0; p.airOffY = 0;
+        }
+        if (!p.controlled) moveToward(p, dropX + p.airOffX, dropY + p.airOffY, chaseSpd);
+
+        // Jumping disabled for now.
+      } else {
+        // v47: during an in-air kick, there is no carrier. If we pass null,
+        // most players just sit at/near home and look "frozen".
+        // Use a proxy carrier at the kick origin for the kicking team to drive runs.
+        const kickTeam = (ball.lastKickedBy === 'sloths' || ball.lastKickedBy === 'dropbears') ? ball.lastKickedBy : null;
+        const carrierProxy = kickTeam ? { x: ball.kickStartX, y: ball.kickStartY } : null;
+        const myCarrier = (kickTeam && p.team === kickTeam) ? carrierProxy : ((p.team === 'sloths') ? slothCarrier : bearCarrier);
+
+        // If you're already sitting on your roam target, force a new roam soon so
+        // players keep moving instead of standing still for long periods.
+        if (!p.controlled && p.roamTimer > 0){
+          const rx = (p.roamX ?? p.homeX), ry = (p.roamY ?? p.homeY);
+          if (Math.hypot(p.x - rx, p.y - ry) < 6){
+            p.roamTimer = Math.min(p.roamTimer, 8);
+          }
+        }
+
+        const ft = formationTarget(p, myCarrier);
+        // v48: on enemy kicks, non-controlled Sloths should still move (especially mids/ruck),
+        // but we keep them in shape rather than dragging them into the drop.
+        if ((ball.lastKickedBy && ball.lastKickedBy !== 'sloths') && p.team === 'sloths' && !p.controlled){
+          if (p.band === 'mid' || p.band === 'ruck'){
+            const tx = (ft.tx * 0.50) + (OVAL_CX * 0.50);
+            const ty = (ft.ty * 0.65) + (OVAL_CY * 0.35);
+            moveToward(p, tx, ty, AI_SPEED_ZONE * 1.08);
+          } else {
+            moveToward(p, ft.tx, ft.ty, AI_SPEED_ZONE);
+          }
+        } else if (!p.controlled) {
+          moveToward(p, ft.tx, ft.ty, AI_SPEED_ZONE);
+        }
+      }
+      continue;
+    }
+
+    // Normal phase: ball free (tight swarm cap)
+    if (ball.free && !ball.intendedTarget){
+      if (shouldCommitToPlay(p, hotX, hotY)){
+        const isChaser = (p.team === 'sloths') ? looseChasersSloths.has(p) : looseChasersBears.has(p);
+        if (isChaser){
+          if (!p.controlled) moveToward(p, hotX, hotY, AI_SPEED_CHASE);
+        } else {
+          const myCarrier = (p.team === 'sloths') ? slothCarrier : bearCarrier;
+          const ft = formationTarget(p, myCarrier);
+          if (!p.controlled) moveToward(p, ft.tx, ft.ty, AI_SPEED_ZONE);
+        }
+      } else {
+        const myCarrier = (p.team === 'sloths') ? slothCarrier : bearCarrier;
+        const ft = formationTarget(p, myCarrier);
+        if (!p.controlled) moveToward(p, ft.tx, ft.ty, AI_SPEED_ZONE);
+      }
+      continue;
+    }
+
+    // Somebody has it
+    const oppCarrier = (p.team === 'sloths') ? bearCarrier : slothCarrier;
+    const myCarrier  = (p.team === 'sloths') ? slothCarrier : bearCarrier;
+
+    if (oppCarrier){
+      const dToCarrier = Math.hypot(p.x - oppCarrier.x, p.y - oppCarrier.y);
+      if (dToCarrier < 240 && shouldCommitToPlay(p, oppCarrier.x, oppCarrier.y)){
+        // Swarm cap: only up to 3 defenders chase the carrier.
+        const chasers = allPlayers
+          .filter(pp => pp.team === p.team && !pp.hasBall)
+          .map(pp => ({ pp, d: Math.hypot(pp.x - oppCarrier.x, pp.y - oppCarrier.y) }))
+          .sort((a,b)=>a.d-b.d)
+          .slice(0, 3)
+          .map(o => o.pp);
+        const isChaser = chasers.includes(p);
+        if (isChaser){
+          if (!p.controlled) moveToward(p, oppCarrier.x, oppCarrier.y, AI_SPEED_CHASE * 1.05);
+        } else {
+          const ft = formationTarget(p, myCarrier);
+          if (!p.controlled) moveToward(p, ft.tx, ft.ty, AI_SPEED_ZONE);
+        }
+      } else {
+        const ft = formationTarget(p, myCarrier);
+        if (!p.controlled) moveToward(p, ft.tx, ft.ty, AI_SPEED_ZONE);
+      }
+    } else {
+      const ft = formationTarget(p, myCarrier);
+      if (!p.controlled) moveToward(p, ft.tx, ft.ty, AI_SPEED_ZONE);
+    }
+  }
+}
+
+// ===================
+// UPDATE LOOP
+// ===================
+function update(){
+  // v101: hard pause (freeze all gameplay + timers)
+  if (isPaused) return;
+
+  allPlayers.forEach(p => {
+    if (p.tackleCooldown > 0) p.tackleCooldown--;
+    if (p.noPickupFrames > 0) p.noPickupFrames--;
+    if (p.hasBall) p.possessFrames++;
+    else p.possessFrames = 0;
+
+    // v30: track sustained pressure on the ball carrier (for forced tackles)
+    if (p.hasBall){
+      const oppTeam = (p.team === 'sloths') ? 'dropbears' : 'sloths';
+      const oppClose = countPlayersWithin(oppTeam, p.x, p.y, AI_PRESSURE_RADIUS);
+      if (oppClose >= AI_PRESSURE_MIN_OPP) p.pressureFrames = (p.pressureFrames || 0) + 1;
+      else p.pressureFrames = 0;
+    } else {
+      p.pressureFrames = 0;
+    }
+  });
+
+  if (kickoffLockFrames > 0) kickoffLockFrames--;
+  if (kickInGraceFrames > 0) kickInGraceFrames--;
+  // v57: ensure umpire animation timing is fixed at 60fps (not display refresh rate)
+  if (umpireDisplayFrames > 0) umpireDisplayFrames--;
+
+  // Post-score pause then reset to centre
+  if (scorePauseFrames > 0){
+    scorePauseFrames--;
+    if (scorePauseFrames === 0 && pendingReset){
+      const pr = pendingReset;
+      pendingReset = null;
+      resetAfterScore(pr.type, pr.teamToStart, pr.scoringEndSide, pr.scoredY);
+      return;
+    }
+    // Freeze players during the score pause, but let the ball keep travelling into the crowd.
+    advanceBallDuringScorePause();
+    return;
+  }
+
+  // v69: Game clock (20:00) with stoppage time.
+  // Only runs during live play; stops on marks/goal kicks/quarter breaks/score pauses/etc.
+  if (gameState === 'playing'){
+    quarterTime = Math.max(0, quarterTime - (GAME_CLOCK_SPEED_MULT / 60));
+    if (quarterTime <= 0){
+      endQuarterNow();
+    }
+  }
+
+  if (kickCharging && (gameState === 'playing' || gameState === 'markstop')){
+    kickChargeFrames = Math.min(KICK_CHARGE_MAX_FRAMES, kickChargeFrames + 1);
+  } else {
+    kickChargeFrames = Math.max(0, kickChargeFrames - 2);
+  }
+
+  if (gameState === 'goalkick'){
+    updateGoalKick();
+  } else if (gameState === 'markstop'){
+    if (markLockFrames > 0) markLockFrames--;
+    markStopFrames--;
+    if (markStopFrames <= 0) { gameState = 'playing'; markCarrier = null; }
+  }
+
+  const simActive = (gameState === 'playing' || gameState === 'markstop' || gameState === 'goalkick_flight');
+  if (simActive){
+    updatePlaying();
+    if (gameState !== 'goalkick_flight'){
+      autoSwitchControl();
+      updateTeamAI();
+      applySeparation();
+    }
+    updateCamera();
+    updateMiniMapCamera();
+
+    // Play-on detection during protected mark
+    if (gameState === 'markstop' && markCarrier && markCarrier.hasBall){
+      const attackDir = getAttackDir(markCarrier.team);
+      const dx = markCarrier.x - markX;
+      // Play on if you move toward the goal you're attacking.
+      // Also play on if you retreat too far away from the attacking goal.
+      if (markLockFrames <= 0 && (dx * attackDir > MARK_PLAYON_FWD || dx * attackDir < -MARK_BACK_ALLOW)){
+        gameState = 'playing';
+        markStopFrames = 0;
+        markCarrier = null;
+        showMessage('PLAY ON!');
+      }
+    }
+  } else {
+    updateCamera();
+  }
+
+  for (const k in justPressed) justPressed[k] = false;
+}
+
+function updatePlaying(){
+  sanitizeBall();
+
+  const freezePlayers = (gameState === 'goalkick_flight') || (gameState === 'markstop' && markLockFrames > 0);
+  const player = getControlledPlayer();
+  if (!freezePlayers){
+    moveControlledPlayer();
+    if (player && player.hasBall) attachBallToCarrier(player);
+  }
+
+  // v25: X = Handball (with ball) OR Tackle (without ball). Z removed.
+  // v103: X also switches player while defending (when Sloths are not in possession),
+  // but only if a tackle did NOT happen.
+  if (!freezePlayers && justPressed['KeyX'] && player){
+    if (player.hasBall){
+      // Handball: short, directional, travels
+      const dir = safeUnit(player.aimX, player.aimY);
+      // If a handpass is possible, it should always go to the aimed teammate.
+      const target = findNearestTeammateInDirection(player, handpassMaxDist(player), dir.ux, dir.uy, HANDBALL_MIN_DOT);
+      if (target){
+        player.hasBall = false;
+        ball.free = true;
+        ball.kickType = 'handball';
+        playSound('handball');
+        ball.lastKickedBy = player.team;
+        ball.kickStartX = ball.x;
+        ball.kickStartY = ball.y;
+
+        const dx = target.x - ball.x;
+        const dy = target.y - ball.y;
+        const dist = Math.hypot(dx, dy);
+        const flight = planFlightFrames(dist, HANDBALL_AIR_SPEED, HANDBALL_FRAMES_MIN, HANDBALL_FRAMES_MAX);
+        startTargetedFlight(target.x, target.y, flight, 18);
+        ball.intendedTarget = target;
+
+        switchControlTo(target);
+      }
+    } else {
+      // If Sloths are NOT in possession, X is contextual:
+      // - Attempt tackle if possible
+      // - Otherwise switch to the Sloths player nearest the ball/carrier
+      const slothsInPossession = allPlayers.some(pp => pp.team === 'sloths' && pp.hasBall);
+      if (!slothsInPossession){
+        // Cancel any stale kick charge so the previous offense input can't "leak" into defense.
+        kickCharging = false;
+        kickChargeFrames = 0;
+
+        const victim = allPlayers.find(p => p.hasBall && p.team !== player.team);
+        const tackled = victim ? attemptTackle(player, victim, true) : false;
+        if (!tackled){
+          // If the opponent is carrying, the ball is offset from the carrier.
+          // Use carrier position so "nearest the ball" feels correct.
+          const bearCarrier = allPlayers.find(pp => pp.team === 'dropbears' && pp.hasBall);
+          const tx = bearCarrier ? bearCarrier.x : ball.x;
+          const ty = bearCarrier ? bearCarrier.y : ball.y;
+          const candidate = nearestPlayer('sloths', tx, ty).best;
+          if (candidate && !candidate.controlled) {
+            switchControlTo(candidate);
+            // Override the automatic drop-zone selection - player explicitly chose this.
+            ball.chosenSlothsInterceptorName = null; // clear any existing lock
+            ball.chosenSlothsInterceptorName = candidate.name;
+            // Remove extra cooldown so manual switching always works.
+            controlSwitchCooldown = 0;
+          }
+        }
+      } else {
+        const victim = allPlayers.find(p => p.hasBall && p.team !== player.team);
+        if (victim) attemptTackle(player, victim, true);
+      }
+    }
+  }
+
+  // AI tackle attempts
+  const slothCarrier = allPlayers.find(p => p.team==='sloths' && p.hasBall);
+  const bearCarrier  = allPlayers.find(p => p.team==='dropbears' && p.hasBall);
+
+  if (!freezePlayers && slothCarrier){
+    // Only a small pack can engage (prevents swarms)
+    const defenders = allPlayers
+      .filter(p => p.team === 'dropbears' && !p.hasBall)
+      .map(p => ({ p, d: Math.hypot(p.x - slothCarrier.x, p.y - slothCarrier.y) }))
+      .sort((a,b)=>a.d-b.d)
+      .slice(0, 5)
+      .map(o => o.p);
+    for (const ai of defenders){
+      if (Math.hypot(ai.x - slothCarrier.x, ai.y - slothCarrier.y) < 240) attemptTackle(ai, slothCarrier, false);
+    }
+  }
+  if (!freezePlayers && bearCarrier){
+    const defenders = allPlayers
+      .filter(p => p.team === 'sloths' && !p.hasBall)
+      .map(p => ({ p, d: Math.hypot(p.x - bearCarrier.x, p.y - bearCarrier.y) }))
+      .sort((a,b)=>a.d-b.d)
+      .slice(0, 5)
+      .map(o => o.p);
+    for (const ai of defenders){
+      if (Math.hypot(ai.x - bearCarrier.x, ai.y - bearCarrier.y) < 240) attemptTackle(ai, bearCarrier, false);
+    }
+  }
+
+  // Dropbears carrier behaviour (simple for now)
+  if (!freezePlayers && bearCarrier){
+    // v94: if the carrier has taken a mark, sometimes hold and take a set kick (no play-on).
+    if (gameState === 'markstop' && markCarrier === bearCarrier){
+      attachBallToCarrier(bearCarrier);
+      const hold = Math.max(0, (bearCarrier.aiMarkHoldFrames || 0));
+      if (hold > 0){
+        bearCarrier.aiMarkHoldFrames = hold - 1;
+        // Stay still while holding the mark.
+        return;
+      }
+      if (bearCarrier.aiMarkWillKick){
+        bearCarrier.aiMarkWillKick = false;
+        aiKickFromMark(bearCarrier);
+        return;
+      }
+      // Otherwise: play on as before (fall through)
+    }
+
+    attachBallToCarrier(bearCarrier);
+
+    const aimY = (OVAL_CY - bearCarrier.y) * 0.01;
+    const run = safeUnit(getAttackDir('dropbears'), aimY);
+    const { dist: pressD } = nearestPlayer('sloths', bearCarrier.x, bearCarrier.y);
+    const inRange = dropbearsInRange(bearCarrier.x);
+    const underPressure = pressD < 95;
+    const settled = bearCarrier.possessFrames > 95;
+
+    // v30: if under pressure and in range, snap it now (don't walk it over the goal line).
+    if (inRange && underPressure && bearCarrier.possessFrames > 30){
+      enterGoalKick(bearCarrier, true);
+      return;
+    }
+
+    // v28: handball more under pressure to get out of trouble (more "strategic" play).
+    if (bearCarrier.possessFrames > 40 && underPressure && Math.random() < 0.22){
+      const hbTarget = aiChooseHandballTarget(bearCarrier);
+      if (hbTarget){
+        bearCarrier.hasBall = false;
+        ball.free = true;
+        ball.kickType = 'handball';
+        playSound('handball');
+        ball.lastKickedBy = 'dropbears';
+        ball.kickStartX = ball.x;
+        ball.kickStartY = ball.y;
+
+        const dx = hbTarget.x - ball.x;
+        const dy = hbTarget.y - ball.y;
+        const dist = Math.hypot(dx, dy);
+        const flight = planFlightFrames(dist, HANDBALL_AIR_SPEED, HANDBALL_FRAMES_MIN, HANDBALL_FRAMES_MAX);
+        startTargetedFlight(hbTarget.x, hbTarget.y, flight, 18);
+        ball.intendedTarget = hbTarget;
+        return;
+      }
+    }
+
+    // v30: kick to open players under pressure (more clever than always running).
+    if (bearCarrier.possessFrames > 30 && underPressure && Math.random() < 0.22){
+      const passTarget = aiChoosePassTarget(bearCarrier);
+      if (passTarget){
+        bearCarrier.hasBall = false;
+        ball.free = true;
+        ball.kickType = 'pass';
+        ball.lastKickedBy = 'dropbears';
+        ball.kickStartX = ball.x;
+        ball.kickStartY = ball.y;
+        ball.intendedTarget = passTarget;
+
+        const dx = passTarget.x - ball.x;
+        const dy = passTarget.y - ball.y;
+        const dist = Math.hypot(dx, dy);
+        const flight = planFlightFrames(dist, PASS_AIR_SPEED, PASS_FRAMES_MIN, PASS_FRAMES_MAX);
+        const maxH = 70 + Math.min(70, dist * 0.14);
+        startTargetedFlight(passTarget.x, passTarget.y, flight, maxH);
+        return;
+      }
+    }
+
+    // Only walk it up when not under pressure.
+    const spd = AI_SPEED_BASE * playerSpeedFactor(bearCarrier);
+    bearCarrier.x += run.ux * spd;
+    bearCarrier.y += run.uy * spd * 0.60;
+    clampToOval(bearCarrier);
+
+  // Dropbears goal shot uses the same golf meter + animated kick.
+  if (settled && inRange && Math.random() < 0.070){
+      enterGoalKick(bearCarrier, true);
+      return;
+    }
+
+    if (settled && inRange && Math.random() < 0.010){
+      bearCarrier.hasBall = false;
+      ball.free = true;
+      ball.lastKickedBy = 'dropbears';
+      ball.kickType = 'punt';
+      // v41: reset interceptor lock for legacy punt flights
+      ball.airChaseId = airChaseIdCounter++;
+      ball.chosenSlothsInterceptorName = null;
+      ball.airChaseFrames = 0;
+      ball.kickStartX = ball.x;
+      ball.kickStartY = ball.y;
+      const wobble = (Math.random()-0.5)*0.50;
+      const u = safeUnit(1, ((OVAL_CY - bearCarrier.y)*0.01) + wobble);
+
+      ball.vx = u.ux * (10.0 * SPEED_SCALE);
+      ball.vy = u.uy * (10.0 * SPEED_SCALE);
+      ball.height = 88;
+      ball.landingMarkerStartHeight = ball.height;
+      ball.flightFramesLeft = PUNT_FLIGHT_FRAMES;
+      ball.flightTotalFrames = 0;
+      ball.flightMaxHeight = 0;
+      ball.gatherLockFrames = 0;
+      ball.intendedTarget = null;
+      contest.active = false;
+    } else if (settled && underPressure && Math.random() < 0.014){
+      bearCarrier.hasBall = false;
+      ball.free = true;
+      ball.lastKickedBy = 'dropbears';
+      ball.kickType = 'punt';
+      // v41: reset interceptor lock for legacy punt flights
+      ball.airChaseId = airChaseIdCounter++;
+      ball.chosenSlothsInterceptorName = null;
+      ball.airChaseFrames = 0;
+      ball.kickStartX = ball.x;
+      ball.kickStartY = ball.y;
+      const u = safeUnit(1, (Math.random()-0.5)*0.60);
+      ball.vx = u.ux * (9.0 * SPEED_SCALE);
+      ball.vy = u.uy * (9.0 * SPEED_SCALE);
+      ball.height = 82;
+      ball.landingMarkerStartHeight = ball.height;
+      ball.flightFramesLeft = PUNT_FLIGHT_FRAMES;
+      ball.flightTotalFrames = 0;
+      ball.flightMaxHeight = 0;
+      ball.gatherLockFrames = 0;
+      ball.intendedTarget = null;
+      contest.active = false;
+    }
+  }
+
+  // Ball physics
+  if (ball.free){
+    if (ball.gatherLockFrames > 0) ball.gatherLockFrames--;
+
+    const isArcedFlight =
+      (ball.kickType === 'pass' || ball.kickType === 'chip' || ball.kickType === 'handball' || ball.kickType === 'punt' || ball.kickType === 'throwin' || ball.kickType === 'goalkick') &&
+      ball.flightFramesLeft > 0 &&
+      (ball.flightTotalFrames > 0);
+
+    const prevX = ball.x, prevY = ball.y;
+    ball.prevHeight = ball.height;
+    if (isArcedFlight){
+      // No slow-mo: constant-time flight.
+      const total = Math.max(1, ball.flightTotalFrames);
+      const dt = 1 / total;
+      ball.flightT = clamp(ball.flightT + dt, 0, 1);
+
+      ball.x = ball.flightFromX + (ball.flightToX - ball.flightFromX) * ball.flightT;
+      ball.y = ball.flightFromY + (ball.flightToY - ball.flightFromY) * ball.flightT;
+      const s = Math.max(0, Math.sin(Math.PI * ball.flightT));
+      ball.height = ball.flightMaxHeight * Math.pow(s, FLIGHT_HEIGHT_SHAPE);
+
+      // keep framesLeft in sync for any code that reads it
+      ball.flightFramesLeft = (1 - ball.flightT) * total;
+
+      // If the ball has effectively landed, award the catch to whoever is underneath it.
+      if (tryResolveCatchOnLanding()) return;
+
+      if (ball.flightFramesLeft <= 0){
+        // v96: don't make the ball feel like it's made of lead.
+        // Let fast chip/pass kicks skid/bounce along the deck a bit if nobody marked it.
+        if (ball.kickType === 'handball' || ball.kickType === 'goalkick'){
+          ball.vx = 0;
+          ball.vy = 0;
+        } else if (ball.kickType === 'chip' || ball.kickType === 'pass'){
+          const sp = Math.hypot(ball.vx, ball.vy);
+          if (sp > 2.2){
+            ball.vx *= 0.65;
+            ball.vy *= 0.65;
+          } else {
+            ball.vx = 0;
+            ball.vy = 0;
+          }
+        } else {
+          // Punt (or other): keep a little momentum
+          ball.vx *= 0.30;
+          ball.vy *= 0.30;
+        }
+        ball.gatherLockFrames = GATHER_LOCK_FRAMES;
+
+        // Bounce if nobody marked it (short + quick settle).
+        ball.height = BOUNCE_HEIGHT;
+        playSound('bounce');
+        // Once it's landed, it's no longer "in flight".
+        ball.flightTotalFrames = 0;
+        ball.flightMaxHeight = 0;
+        ball.flightT = 0;
+        ball.flightTimeScale = 1;
+      }
+    } else {
+      ball.x += ball.vx; ball.y += ball.vy;
+
+      // Friction for punts, and for any ball rolling on the deck after a flight ends.
+      const onGround = (ball.height <= 0.01 && ball.flightFramesLeft <= 0);
+      if (ball.kickType === 'punt' || onGround){
+        ball.vx *= BALL_FRICTION; ball.vy *= BALL_FRICTION;
+      }
+
+      // v28: allow marks on legacy punts (AI punts use height-decay instead of targeted flight)
+      if (ball.kickType === 'punt' && ball.flightTotalFrames <= 0 && ball.height <= 1.5 && ball.gatherLockFrames <= 0){
+        const { best, dist } = findPlayerUnderBall();
+        if (best){
+          // v33: mark only counts if you're roughly in the drop-zone circle;
+          // otherwise it should hit the deck and bounce/roll.
+          const kickDist = Math.hypot(ball.x - ball.kickStartX, ball.y - ball.kickStartY);
+          const isMarkableKick = kickDist >= MARK_MIN_KICK_DIST;
+          if (isMarkableKick){
+            const pt = predictDropZoneCenter();
+            const r = dropZoneRadiusAt(pt.y);
+            const dDrop = Math.hypot(best.x - pt.x, best.y - pt.y);
+            const markExtra = Math.max(0, (getStat(best, 'MARKING') - 70) * 0.60);
+
+            // v45: Option B — Award restriction for Sloths kicks (legacy punts).
+            const isSlothsKick = (ball.lastKickedBy === 'sloths');
+            if (isSlothsKick && best.team === 'sloths' && !best.controlled){
+              // Let it bounce (do not award mark to an AI-controlled Sloths teammate)
+            } else if (dDrop <= (r + markExtra)){
+              resolveCatch(best);
+              ball.free = false;
+            }
+          } else if (dist <= LANDING_CATCH_RADIUS){
+            resolveCatch(best);
+            ball.free = false;
+          }
+        }
+      }
+
+  // v42: clear the in-air episode once legacy punt is basically down (after mark check)
+  if (ball.kickType === 'punt' && ball.flightTotalFrames <= 0 && ball.height <= 1.5){
+    ball.airChaseId = 0;
+    ball.chosenSlothsInterceptorName = null;
+    ball.airChaseFrames = 0;
+  }
+
+      if (ball.height > 0){
+        const mult = (ball.flightTotalFrames <= 0) ? GROUND_HEIGHT_DECAY_MULT : 1;
+        ball.height = Math.max(0, ball.height - BALL_HEIGHT_DECAY * mult);
+      }
+    }
+
+    // Scores must resolve before boundary handling.
+    if (handleGoalLineCrossing(prevX, prevY)) return;
+
+    // Boundary: throw-in or out on the full.
+    if (handleBallOutOfBounds(prevX, prevY)) {
+      // ball state already reset by the handler
+    }
+
+    // Mark resolution while in air
+    tryResolveMarkWhileInAir();
+
+    // If targeted flight ended and no mark: keep intended target briefly (so control stays sensible),
+    // then clear it after the landing pickup lock.
+  if ((ball.kickType === 'pass' || ball.kickType === 'chip' || ball.kickType === 'handball' || ball.kickType === 'punt' || ball.kickType === 'throwin' || ball.kickType === 'goalkick') &&
+        ball.flightFramesLeft <= 0 &&
+        ball.gatherLockFrames <= 0){
+      ball.intendedTarget = null;
+      contest.active = false;
+    }
+
+    // Ground pickup only when it's on the deck and after a tiny landing lock.
+    const inAirKick =
+      (ball.kickType === 'pass' || ball.kickType === 'chip' || ball.kickType === 'handball' || ball.kickType === 'punt' || ball.kickType === 'throwin' || ball.kickType === 'goalkick') &&
+      ball.flightTotalFrames > 0 &&
+      ball.flightFramesLeft > 0;
+
+    if (!inAirKick && ball.gatherLockFrames <= 0 && ball.height <= 1.5){
+      for (const p of allPlayers){
+        if (p.noPickupFrames > 0) continue;
+        if (Math.hypot(ball.x - p.x, ball.y - p.y) < 26){
+          giveBallTo(p);
+          if (p.team==='sloths') switchControlTo(p);
+          break;
+        }
+      }
+    }
+
+  }
+}
+
+// ===================
+// RESET LOGIC
+// ===================
+function resetAfterScore(type, teamToStart, scoringEndSide=null, scoredY=null){
+  allPlayers.forEach(p => {
+    p.x = p.homeX;
+    p.y = p.homeY;
+    p.hasBall = false;
+    p.noPickupFrames = 0;
+    p.tackleCooldown = 0;
+    p.possessFrames = 0;
+    p.jumpFrames = 0;
+    p.jumpT = 0;
+    p.roamTimer = 0;
+    p.roamX = p.homeX;
+    p.roamY = p.homeY;
+  });
+
+  ball.vx = 0; ball.vy = 0; ball.height = 0;
+  ball.free = false;
+  ball.lastKickedBy = null;
+  ball.kickType = null;
+  ball.goalkickPlannedResult = null;
+  ball.flightFramesLeft = 0;
+  ball.flightTotalFrames = 0;
+  ball.flightMaxHeight = 0;
+  ball.intendedTarget = null;
+  ball.softCatchTarget = null;
+  ball.softCatchFramesLeft = 0;
+  ball.gatherLockFrames = 0;
+
+  contest.active = false;
+  contest.target = null;
+
+  kickCharging = false;
+  kickChargeFrames = 0;
+
+  // v25: if it's a BEHIND, scored-against team gets a kick-in on the backline
+  // near where the behind went through (not a centre reset).
+  if (type === 'behind' && (scoringEndSide === 'left' || scoringEndSide === 'right')){
+    const kickX = (scoringEndSide === 'left') ? (LEFT_GOAL_X + 85) : (RIGHT_GOAL_X - 85);
+    const kickY = (scoredY == null) ? OVAL_CY : clamp(scoredY, BEHIND_Y_TOP + 25, BEHIND_Y_BOT - 25);
+    const starter = nearestPlayer(teamToStart, kickX, kickY).best;
+    if (starter){
+      starter.x = kickX;
+      starter.y = kickY;
+      clampToOval(starter);
+      giveBallTo(starter);
+      // v97: set a sane default aim for kick-ins so a held Space punt goes downfield
+      starter.aimX = getAttackDir(starter.team);
+      starter.aimY = clamp((OVAL_CY - starter.y) * 0.02, -0.65, 0.65);
+      starter.noPickupFrames = START_UNTACKLE_FRAMES;
+      kickInGraceFrames = KICKIN_GRACE_FRAMES;
+      if (starter.team === 'sloths') switchControlTo(starter);
+      cameraX = Math.max(0, Math.min(FIELD_WIDTH - 800, starter.x - 400));
+      cameraY = starter.y - 300;
+      return;
+    }
+  }
+
+  // Default: restart from the centre.
+  const starter = nearestPlayer(teamToStart, OVAL_CX, OVAL_CY).best;
+  if (starter){
+    starter.x = OVAL_CX;
+    starter.y = OVAL_CY;
+    clampToOval(starter);
+    giveBallTo(starter);
+    starter.noPickupFrames = START_UNTACKLE_FRAMES;
+    kickoffLockFrames = START_UNTACKLE_FRAMES;
+    cameraX = Math.max(0, Math.min(FIELD_WIDTH - 800, starter.x - 400));
+    cameraY = starter.y - 300;
+  } else {
+    resetPositionsStart();
+  }
+}
+
+function resetPositionsStart(){
+  rebuildPlayers();
+  const starter = nearestPlayer('sloths', OVAL_CX, OVAL_CY).best;
+  if (starter){
+    starter.x = OVAL_CX;
+    starter.y = OVAL_CY;
+    clampToOval(starter);
+    giveBallTo(starter);
+    starter.noPickupFrames = START_UNTACKLE_FRAMES;
+    kickoffLockFrames = START_UNTACKLE_FRAMES;
+    cameraX = Math.max(0, Math.min(FIELD_WIDTH - 800, starter.x - 400));
+    cameraY = starter.y - 300;
+  }
+}
+
+// ===================
+// MAIN LOOP
+// ===================
+// Fixed-timestep loop so game speed is consistent on 60/144/240Hz displays.
+let lastTs = null;
+let accMs = 0;
+const STEP_MS = 1000/60;
+
+function gameLoop(ts){
+  if (lastTs == null) lastTs = ts;
+  const dtMs = Math.min(100, Math.max(0, ts - lastTs));
+  lastTs = ts;
+  accMs += dtMs;
+
+  let steps = 0;
+  while (accMs >= STEP_MS && steps < 5){
+    update();
+    accMs -= STEP_MS;
+    steps++;
+  }
+
+  drawField();
+  drawGoalPosts();
+  drawLandingMarker();
+
+  const sorted = [...allPlayers].sort((a,b)=>a.y-b.y);
+  if (ball.height < 15) drawBall();
+  sorted.forEach(drawPlayer);
+  if (ball.height >= 15) drawBall();
+
+  drawKickMeter();
+  drawUI();
+  drawControlledPlayerHUD();
+  drawEnemyPossessionHUD();
+  drawMiniMap();
+  drawMessage();
+  drawGoalUmpire();
+  drawGoalKickMeter();
+  drawPauseOverlay();
+
+  requestAnimationFrame(gameLoop);
+}
+
+resetPositionsStart();
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>
