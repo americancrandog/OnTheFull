@@ -40,7 +40,7 @@
 </head>
 <body>
   <div class="title">🏈 ON THE FULL 🏈</div>
-  <canvas id="game" width="800" height="600"></canvas>
+  <canvas id="game" width="1600" height="1200"></canvas>
   <div class="controls">
     <span>ARROWS</span> Move &nbsp;|&nbsp;
     <span>TAP SPACE</span> Chip Kick &nbsp;|&nbsp;
@@ -50,6 +50,19 @@
   </div>
 
 <script>
+// Debug logging system
+const debugLogs = [];
+function debugLog(location, message, data, hypothesisId) {
+  const entry = {location, message, data, hypothesisId, timestamp:Date.now(), sessionId:'debug-session', runId:'run1'};
+  debugLogs.push(entry);
+  console.log('[DEBUG]', entry);
+  try {
+    fetch('http://127.0.0.1:7242/ingest/ab483831-0e1f-4b32-a3c3-48c6b14407b5',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(entry)}).catch(()=>{});
+  } catch(e) {}
+  // Keep last 100 logs
+  if (debugLogs.length > 100) debugLogs.shift();
+}
+
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 
@@ -810,7 +823,8 @@ const AI_SPEED_CHASE         = RUN_SPEED;
 const AI_SPEED_ZONE          = RUN_SPEED;
 
 // Ball physics
-const BALL_FRICTION = 0.993;
+// v118: slightly reduced friction so ball travels further
+const BALL_FRICTION = 0.995;
 const BALL_HEIGHT_DECAY = 0.115;
 const HEIGHT_DRAW_BOOST = 1.35;
 
@@ -931,7 +945,8 @@ const DROPZONE_MAX_R = 52;
 const FLIGHT_HEIGHT_SHAPE = 1.35;
 
 // Bounce after no-mark landing
-const BOUNCE_HEIGHT = 7;
+// v118: increased bounce height for more bouncy feel
+const BOUNCE_HEIGHT = 12;
 const GROUND_HEIGHT_DECAY_MULT = 7;
 
 // After any kick/handball lands, briefly lock pickups so players don't "vacuum" it instantly.
@@ -1681,22 +1696,25 @@ function advanceBallDuringScorePause(){
     if (ball.flightFramesLeft <= 0){
       // v96: don't make the ball feel like it's made of lead.
       // Let fast chip/pass kicks skid/bounce along the deck a bit if nobody marked it.
+      // v118: increased velocity retention so ball travels further when unmarked
       if (ball.kickType === 'handball' || ball.kickType === 'goalkick'){
         ball.vx = 0;
         ball.vy = 0;
       } else if (ball.kickType === 'chip' || ball.kickType === 'pass'){
         const sp = Math.hypot(ball.vx, ball.vy);
-        if (sp > 2.2){
-          ball.vx *= 0.65;
-          ball.vy *= 0.65;
+        // v118: lower threshold and higher retention for more bounces
+        if (sp > 1.8){
+          ball.vx *= 0.78;
+          ball.vy *= 0.78;
         } else {
           ball.vx = 0;
           ball.vy = 0;
         }
       } else {
-        // Punt (or other): keep a little momentum
-        ball.vx *= 0.30;
-        ball.vy *= 0.30;
+        // Punt (or other): keep more momentum for longer travel
+        // v118: increased from 0.30 to 0.48
+        ball.vx *= 0.48;
+        ball.vy *= 0.48;
       }
       ball.gatherLockFrames = GATHER_LOCK_FRAMES;
 
@@ -1761,6 +1779,9 @@ function getControlledPlayer(){
 let controlSwitchCooldown = 0;
 function switchControlTo(p){
   if (!p) return;
+  // #region agent log
+  debugLog('switchControlTo:called', 'switchControlTo called', {targetName:p.name,previousCooldown:controlSwitchCooldown}, 'E');
+  // #endregion
   allPlayers.forEach(pl => pl.controlled=false);
   p.controlled=true;
   controlSwitchCooldown = CONTROL_SWITCH_COOLDOWN;
@@ -2956,7 +2977,8 @@ function drawEnemyPossessionHUD(){
   const panelH = 64; // v107: match shorter HUD/minimap height
   const y = Math.max(14, (kickMeterY - 12) - panelH);
   const w = 240;
-  const x = canvas.width - w - 14;
+  // v120: Use 800 instead of canvas.width since context is scaled 2x
+  const x = 800 - w - 14;
   drawPlayerHUDPanel(enemyPrimary, x, y, true, '#ddd');
 }
 
@@ -3014,7 +3036,8 @@ function drawMiniMap(){
 
   const panelW = 240;
   const leftX = 14;
-  const rightX = canvas.width - panelW - 14;
+  // v120: Use 800 instead of canvas.width since context is scaled 2x
+  const rightX = 800 - panelW - 14;
   const gap = rightX - (leftX + panelW);
   if (gap < 80) return; // no room
 
@@ -3096,19 +3119,20 @@ function drawMiniMap(){
 // v101: pause overlay
 function drawPauseOverlay(){
   if (!isPaused) return;
+  // v120: Use 800x600 coordinates since context is scaled 2x
   ctx.save();
   ctx.fillStyle = 'rgba(0,0,0,0.45)';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillRect(0, 0, 800, 600);
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.font = 'bold 64px Courier New';
   ctx.fillStyle = 'rgba(0,0,0,0.65)';
-  ctx.fillText('PAUSED', canvas.width/2 + 3, canvas.height/2 + 3);
+  ctx.fillText('PAUSED', 403, 303);
   ctx.fillStyle = '#ffffff';
-  ctx.fillText('PAUSED', canvas.width/2, canvas.height/2);
+  ctx.fillText('PAUSED', 400, 300);
   ctx.font = 'bold 16px Courier New';
   ctx.fillStyle = 'rgba(255,255,255,0.85)';
-  ctx.fillText('Press ESC to resume', canvas.width/2, canvas.height/2 + 54);
+  ctx.fillText('Press ESC to resume', 400, 354);
   ctx.restore();
 }
 
@@ -3116,15 +3140,16 @@ function drawPauseOverlay(){
 // MENU RENDERING (v113)
 // ===================
 function drawMenuBackground(){
+  // v120: Use 800x600 coordinates since context is scaled 2x
   ctx.save();
   ctx.fillStyle = '#1a1a2e';
-  ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.fillRect(0,0,800,600);
   // subtle vignette
   const g = ctx.createRadialGradient(400,300,120,400,300,520);
   g.addColorStop(0,'rgba(255,215,0,0.10)');
   g.addColorStop(1,'rgba(0,0,0,0.55)');
   ctx.fillStyle = g;
-  ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.fillRect(0,0,800,600);
   ctx.restore();
 }
 
@@ -3362,22 +3387,40 @@ function drawStatsRosterScreen(){
 }
 
 function drawMenuScreens(){
-  if (uiScreen === UI_SCREEN.MAIN_MENU) return drawMainMenuScreen();
-  if (uiScreen === UI_SCREEN.STATS_TEAM) return drawStatsTeamScreen();
-  if (uiScreen === UI_SCREEN.STATS_ROSTER) return drawStatsRosterScreen();
+  // v120: Scale menu drawing 2x to match the doubled canvas resolution
+  ctx.save();
+  ctx.scale(2, 2);
+  
+  if (uiScreen === UI_SCREEN.MAIN_MENU) {
+    drawMainMenuScreen();
+    ctx.restore();
+    return;
+  }
+  if (uiScreen === UI_SCREEN.STATS_TEAM) {
+    drawStatsTeamScreen();
+    ctx.restore();
+    return;
+  }
+  if (uiScreen === UI_SCREEN.STATS_ROSTER) {
+    drawStatsRosterScreen();
+    ctx.restore();
+    return;
+  }
   drawMainMenuScreen();
+  ctx.restore();
 }
 
 function drawInGameMenuOverlay(title, options, selectedIndex, selectedBorderIndex=null){
   // Draws a translucent overlay with menu options; optional border on the "current" selection.
+  // Note: This function is called with context already scaled 2x, so use 800x600 coordinates
   ctx.save();
   ctx.fillStyle = 'rgba(0,0,0,0.55)';
-  ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.fillRect(0,0,800,600);
 
   const w = 520;
   const h = 260;
-  const x = (canvas.width - w) / 2;
-  const y = (canvas.height - h) / 2;
+  const x = (800 - w) / 2;
+  const y = (600 - h) / 2;
   ctx.fillStyle = 'rgba(0,0,0,0.72)';
   ctx.fillRect(x, y, w, h);
   ctx.strokeStyle = '#ffd700';
@@ -3388,7 +3431,7 @@ function drawInGameMenuOverlay(title, options, selectedIndex, selectedBorderInde
   ctx.textBaseline = 'top';
   ctx.font = 'bold 22px Courier New';
   ctx.fillStyle = '#ffd700';
-  ctx.fillText(title, canvas.width/2, y + 18);
+  ctx.fillText(title, 400, y + 18);
 
   const rowH = 54;
   const baseY = y + 66;
@@ -3410,27 +3453,35 @@ function drawInGameMenuOverlay(title, options, selectedIndex, selectedBorderInde
     ctx.font = 'bold 20px Courier New';
     ctx.fillStyle = isSel ? '#ffd700' : '#fff';
     ctx.textBaseline = 'middle';
-    ctx.fillText(options[i], canvas.width/2, ry + (rowH - 10)/2);
+    ctx.fillText(options[i], 400, ry + (rowH - 10)/2);
   }
 
   ctx.font = 'bold 14px Courier New';
   ctx.textBaseline = 'top';
   ctx.fillStyle = 'rgba(255,255,255,0.85)';
-  ctx.fillText('Use ↑/↓, ENTER   •   ESC to go back', canvas.width/2, y + h - 34);
+  ctx.fillText('Use ↑/↓, ENTER   •   ESC to go back', 400, y + h - 34);
   ctx.restore();
 }
 
 function drawPauseMenuOverlay(){
+  // v120: Scale overlay 2x to match doubled canvas resolution
+  ctx.save();
+  ctx.scale(2, 2);
   drawInGameMenuOverlay('PAUSED', ['RESUME', 'CHANGE FORMATION'], pauseMenuIndex);
+  ctx.restore();
 }
 
 function drawFormationMenuOverlay(){
+  // v120: Scale overlay 2x to match doubled canvas resolution
+  ctx.save();
+  ctx.scale(2, 2);
   const opts = [
     FORMATION_LABEL[FORMATION.BALANCED],
     FORMATION_LABEL[FORMATION.OFFENSIVE],
     FORMATION_LABEL[FORMATION.DEFENSIVE]
   ];
   drawInGameMenuOverlay('CHANGE FORMATION', opts, formationMenuIndex, formationListIndex(slothsFormation));
+  ctx.restore();
 }
 
 function drawMessage(){
@@ -3453,12 +3504,13 @@ function drawGoalUmpire(){
 
   // v58: After play resumes, keep the animation but render it as a small overlay
   // so it doesn't block gameplay.
+  // v120: Use 800 instead of canvas.width since context is scaled 2x
   const isCutaway = (scorePauseFrames > 0);
   const s = isCutaway ? 1.0 : 0.58;
   if (!isCutaway){
     // Shrink + move to top-right corner.
     ctx.save();
-    ctx.translate(canvas.width - canvas.width * s, 0);
+    ctx.translate(800 - 800 * s, 0);
     ctx.scale(s, s);
   }
 
@@ -4440,6 +4492,9 @@ function autoSwitchControl(){
     isKickInAir() &&
     (ball.lastKickedBy === 'sloths') &&
     !ball.intendedTarget;
+  // #region agent log
+  debugLog('autoSwitchControl:entry', 'autoSwitchControl called', {enemyKickInAir:enemyKickInAir,slothsKickInAir:slothsKickInAir,ctrlHasBall:ctrl.hasBall,controlSwitchCooldown:controlSwitchCooldown,chosenInterceptor:ball.chosenSlothsInterceptorName}, 'B');
+  // #endregion
 
   // v35: lock-on to ONE interceptor early and stick to them (no jitter).
   // Also: don't rely on team AI choosing it; always hand control to the chosen player immediately.
@@ -4481,8 +4536,14 @@ function autoSwitchControl(){
     if (locked){
       // If we somehow started controlling the wrong player, correct it immediately.
       // This is intentionally aggressive so you always control the receiver.
+      // #region agent log
+      debugLog('autoSwitchControl:lock_override', 'autoSwitchControl forcing lock override', {lockedName:locked.name,lockedControlled:locked.controlled,currentCtrl:ctrl.name,isContested:isContested}, 'B');
+      // #endregion
       if (!locked.controlled) switchControlTo(locked);
       controlSwitchCooldown = 12;
+      // #region agent log
+      debugLog('autoSwitchControl:cooldown_set', 'autoSwitchControl set cooldown', {cooldownSet:12}, 'C');
+      // #endregion
       return;
     }
   }
@@ -4509,7 +4570,12 @@ function autoSwitchControl(){
   // This fixes the case where the right teammate runs under it but you control someone else nearby.
   // (handled above by lock-on logic)
 
-  if (controlSwitchCooldown > 0) { controlSwitchCooldown--; return; }
+  if (controlSwitchCooldown > 0) { 
+    // #region agent log
+    debugLog('autoSwitchControl:cooldown_block', 'autoSwitchControl blocked by cooldown', {cooldown:controlSwitchCooldown}, 'C');
+    // #endregion
+    controlSwitchCooldown--; return; 
+  }
 
   const slothCarrier = allPlayers.find(p => p.team==='sloths' && p.hasBall);
   if (slothCarrier && !slothCarrier.controlled){
@@ -4534,6 +4600,11 @@ function autoSwitchControl(){
 
   if (ball.free && !ball.intendedTarget){
     const candidate = nearestPlayer('sloths', ball.x, ball.y).best;
+    // #region agent log
+    const dropZone = isKickInAir() ? predictDropZoneCenter() : null;
+    const nearestToDrop = isKickInAir() ? nearestPlayer('sloths', dropZone.x, dropZone.y).best : null;
+    debugLog('autoSwitchControl:free_ball', 'autoSwitchControl free ball check', {isKickInAir:isKickInAir(),candidateName:candidate?.name,nearestToDropName:nearestToDrop?.name,ballX:ball.x,ballY:ball.y,dropZoneX:dropZone?.x,dropZoneY:dropZone?.y}, 'D');
+    // #endregion
     if (candidate && !candidate.controlled){
       const d = Math.hypot(candidate.x - ball.x, candidate.y - ball.y);
       if (d < 310 || ball.height < 18){
@@ -5046,6 +5117,9 @@ function updatePlaying(){
   // v103: X also switches player while defending (when Sloths are not in possession),
   // but only if a tackle did NOT happen.
   if (!freezePlayers && justPressed['KeyX'] && player){
+    // #region agent log
+    debugLog('updatePlaying:X_pressed', 'X key pressed', {playerHasBall:player.hasBall,ballFree:ball.free,isKickInAir:isKickInAir(),ballX:ball.x,ballY:ball.y,ballHeight:ball.height,controlSwitchCooldown:controlSwitchCooldown,chosenInterceptor:ball.chosenSlothsInterceptorName}, 'A');
+    // #endregion
     if (player.hasBall){
       // Handball: short, directional, travels
       const dir = safeUnit(player.aimX, player.aimY);
@@ -5080,6 +5154,9 @@ function updatePlaying(){
       // - Attempt tackle if possible
       // - Otherwise switch to the Sloths player nearest the ball/carrier
       const slothsInPossession = allPlayers.some(pp => pp.team === 'sloths' && pp.hasBall);
+      // #region agent log
+      debugLog('updatePlaying:X_no_ball', 'X pressed without ball', {slothsInPossession:slothsInPossession,isKickInAir:isKickInAir(),ballFree:ball.free,ballX:ball.x,ballY:ball.y}, 'A');
+      // #endregion
       if (!slothsInPossession){
         // Cancel any stale kick charge so the previous offense input can't "leak" into defense.
         kickCharging = false;
@@ -5087,13 +5164,24 @@ function updatePlaying(){
 
         const victim = allPlayers.find(p => p.hasBall && p.team !== player.team);
         const tackled = victim ? attemptTackle(player, victim, true) : false;
+        // #region agent log
+        debugLog('updatePlaying:X_after_tackle', 'After tackle attempt', {tackled:tackled,isKickInAir:isKickInAir(),ballFree:ball.free,victimFound:!!victim}, 'A');
+        // #endregion
         if (!tackled){
           // If the opponent is carrying, the ball is offset from the carrier.
           // Use carrier position so "nearest the ball" feels correct.
           const bearCarrier = allPlayers.find(pp => pp.team === 'dropbears' && pp.hasBall);
           const tx = bearCarrier ? bearCarrier.x : ball.x;
           const ty = bearCarrier ? bearCarrier.y : ball.y;
+          // #region agent log
+          const dropZone = isKickInAir() ? predictDropZoneCenter() : null;
+          debugLog('updatePlaying:X_find_nearest', 'Finding nearest player for X switch', {isKickInAir:isKickInAir(),bearCarrier:!!bearCarrier,useX:tx,useY:ty,ballX:ball.x,ballY:ball.y,dropZoneX:dropZone?.x,dropZoneY:dropZone?.y}, 'D');
+          // #endregion
           const candidate = nearestPlayer('sloths', tx, ty).best;
+          // #region agent log
+          const nearestToDrop = isKickInAir() ? nearestPlayer('sloths', dropZone.x, dropZone.y).best : null;
+          debugLog('updatePlaying:X_candidate', 'X switch candidate found', {candidateFound:!!candidate,candidateName:candidate?.name,candidateControlled:candidate?.controlled,nearestToDropName:nearestToDrop?.name,nearestToDropControlled:nearestToDrop?.controlled,chosenInterceptor:ball.chosenSlothsInterceptorName}, 'A');
+          // #endregion
           if (candidate && !candidate.controlled) {
             switchControlTo(candidate);
             // Override the automatic drop-zone selection - player explicitly chose this.
@@ -5101,6 +5189,9 @@ function updatePlaying(){
             ball.chosenSlothsInterceptorName = candidate.name;
             // Remove extra cooldown so manual switching always works.
             controlSwitchCooldown = 0;
+            // #region agent log
+            debugLog('updatePlaying:X_switched', 'X switch executed', {switchedTo:candidate.name,cooldownCleared:true}, 'A');
+            // #endregion
           }
         }
       } else {
@@ -5306,25 +5397,28 @@ function updatePlaying(){
       if (tryResolveCatchOnLanding()) return;
 
       if (ball.flightFramesLeft <= 0){
-        // v96: don't make the ball feel like it's made of lead.
-        // Let fast chip/pass kicks skid/bounce along the deck a bit if nobody marked it.
-        if (ball.kickType === 'handball' || ball.kickType === 'goalkick'){
-          ball.vx = 0;
-          ball.vy = 0;
-        } else if (ball.kickType === 'chip' || ball.kickType === 'pass'){
-          const sp = Math.hypot(ball.vx, ball.vy);
-          if (sp > 2.2){
-            ball.vx *= 0.65;
-            ball.vy *= 0.65;
-          } else {
-            ball.vx = 0;
-            ball.vy = 0;
-          }
-        } else {
-          // Punt (or other): keep a little momentum
-          ball.vx *= 0.30;
-          ball.vy *= 0.30;
-        }
+            // v96: don't make the ball feel like it's made of lead.
+            // Let fast chip/pass kicks skid/bounce along the deck a bit if nobody marked it.
+            // v118: increased velocity retention so ball travels further when unmarked
+            if (ball.kickType === 'handball' || ball.kickType === 'goalkick'){
+              ball.vx = 0;
+              ball.vy = 0;
+            } else if (ball.kickType === 'chip' || ball.kickType === 'pass'){
+              const sp = Math.hypot(ball.vx, ball.vy);
+              // v118: lower threshold and higher retention for more bounces
+              if (sp > 1.8){
+                ball.vx *= 0.78;
+                ball.vy *= 0.78;
+              } else {
+                ball.vx = 0;
+                ball.vy = 0;
+              }
+            } else {
+              // Punt (or other): keep more momentum for longer travel
+              // v118: increased from 0.30 to 0.48
+              ball.vx *= 0.48;
+              ball.vy *= 0.48;
+            }
         ball.gatherLockFrames = GATHER_LOCK_FRAMES;
 
         // Bounce if nobody marked it (short + quick settle).
@@ -5545,6 +5639,10 @@ function gameLoop(ts){
   }
 
   function drawGameFrame(){
+    // v120: Scale context 2x for crisp rendering at double resolution
+    ctx.save();
+    ctx.scale(2, 2);
+    
     drawField();
     drawGoalPosts();
     drawLandingMarker();
@@ -5562,6 +5660,9 @@ function gameLoop(ts){
     drawMessage();
     drawGoalUmpire();
     drawGoalKickMeter();
+    
+    // v120: Restore context after scaling
+    ctx.restore();
   }
 
   // v115: render menus / pause overlays
