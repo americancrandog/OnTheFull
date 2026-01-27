@@ -973,6 +973,8 @@ let kickoffLockFrames = START_UNTACKLE_FRAMES;
 // v102: separate kick-in grace (behind/on-the-full) from centre-bounce safety lock
 let kickInGraceFrames = 0;
 let kickInPlayOnBoostFrames = 0; // v116: brief aggression after grace ends
+let kickInGraceStartX = null; // v117: track starting position for play-on detection
+let kickInGraceCarrier = null; // v117: track which player started with the ball
 
 // After a score, pause briefly before resetting to centre
 let pendingReset = null; // { type, teamToStart }
@@ -2224,7 +2226,10 @@ function awardOutOnTheFullKick(bx, by, kickerTeam){
     receiver.aimX = getAttackDir(receiver.team);
     receiver.aimY = clamp((OVAL_CY - receiver.y) * 0.02, -0.65, 0.65);
     // v102: 5s grace period before defenders can tackle
+    // v117: track starting position for play-on detection
     kickInGraceFrames = KICKIN_GRACE_FRAMES;
+    kickInGraceStartX = receiver.x;
+    kickInGraceCarrier = receiver;
     if (receiver.team === 'sloths') switchControlTo(receiver);
   } else {
     // Fallback: just throw it in.
@@ -3889,6 +3894,14 @@ function resolveCatch(possessor){
   possessor.noPickupFrames = NO_RECLAIM_FRAMES;
   kickoffLockFrames = 0;
 
+  // v117: always switch control to Sloths player who takes the mark (especially for contested marks)
+  if (possessor.team === 'sloths'){
+    switchControlTo(possessor);
+    // Clear any stale interceptor lock so control switching works properly
+    ball.chosenSlothsInterceptorName = null;
+    controlSwitchCooldown = 0;
+  }
+
   if (isMark){
     gameState = 'markstop';
     markStopFrames = MARK_PROTECT_FRAMES;
@@ -4107,6 +4120,12 @@ function performChargedKick(){
     ball.lastKickedBy = player.team;
     ball.kickStartX = ball.x;
     ball.kickStartY = ball.y;
+    // v117: clear kick-in grace when possession changes
+    if (kickInGraceFrames > 0){
+      kickInGraceFrames = 0;
+      kickInGraceStartX = null;
+      kickInGraceCarrier = null;
+    }
 
     if (target){
       const dx = target.x - ball.x;
@@ -4149,6 +4168,12 @@ function performChargedKick(){
     ball.lastKickedBy = player.team;
     ball.kickStartX = ball.x;
     ball.kickStartY = ball.y;
+    // v117: clear kick-in grace when possession changes
+    if (kickInGraceFrames > 0){
+      kickInGraceFrames = 0;
+      kickInGraceStartX = null;
+      kickInGraceCarrier = null;
+    }
     ball.intendedTarget = null;
 
     // ~60-70m max (FIFTY_METRE=450 => 1m≈9 units)
@@ -4191,6 +4216,12 @@ function performChargedKick(){
   ball.lastKickedBy = player.team;
   ball.kickStartX = ball.x;
   ball.kickStartY = ball.y;
+  // v117: clear kick-in grace when possession changes
+  if (kickInGraceFrames > 0){
+    kickInGraceFrames = 0;
+    kickInGraceStartX = null;
+    kickInGraceCarrier = null;
+  }
 
   if (target){
     const dx = target.x - ball.x;
@@ -4419,14 +4450,29 @@ function autoSwitchControl(){
 
     // Pick (or briefly re-pick) the interceptor early in the flight.
     const bestNow = nearestPlayer('sloths', drop.x, drop.y).best;
+    // v117: check if contested - if so, be more aggressive about switching to nearest player
+    const isContested = isContestedAt(drop.x, drop.y, 'sloths');
     if (!ball.chosenSlothsInterceptorName){
       ball.chosenSlothsInterceptorName = bestNow?.name || null;
     } else if (ball.airChaseFrames <= 18 && bestNow){
       const locked = allPlayers.find(p => p.team === 'sloths' && p.name === ball.chosenSlothsInterceptorName);
       const dLocked = locked ? Math.hypot(locked.x - drop.x, locked.y - drop.y) : Infinity;
       const dBest = Math.hypot(bestNow.x - drop.x, bestNow.y - drop.y);
-      if (dBest + 45 < dLocked){
+      // v117: if contested, use smaller threshold to switch more aggressively
+      const threshold = isContested ? 25 : 45;
+      if (dBest + threshold < dLocked){
         ball.chosenSlothsInterceptorName = bestNow.name;
+      }
+    } else if (isContested && bestNow && ball.airChaseFrames > 18){
+      // v117: even after initial lock, if contested, keep checking if someone else is much closer
+      const locked = allPlayers.find(p => p.team === 'sloths' && p.name === ball.chosenSlothsInterceptorName);
+      if (locked){
+        const dLocked = Math.hypot(locked.x - drop.x, locked.y - drop.y);
+        const dBest = Math.hypot(bestNow.x - drop.x, bestNow.y - drop.y);
+        // If someone else is significantly closer (30+ units), switch to them
+        if (dBest + 30 < dLocked){
+          ball.chosenSlothsInterceptorName = bestNow.name;
+        }
       }
     }
     const locked = ball.chosenSlothsInterceptorName
@@ -4892,6 +4938,9 @@ function update(){
   if (wasKickInGrace && kickInGraceFrames === 0){
     declarePlayOn();
     kickInPlayOnBoostFrames = 3 * 60;
+    // v117: clear grace tracking variables
+    kickInGraceStartX = null;
+    kickInGraceCarrier = null;
   }
   if (kickInPlayOnBoostFrames > 0) kickInPlayOnBoostFrames--;
   // v57: ensure umpire animation timing is fixed at 60fps (not display refresh rate)
@@ -4963,6 +5012,19 @@ function update(){
         declarePlayOn();
       }
     }
+
+    // v117: Play-on detection during kick-in grace (backline possession after behind/on-the-full)
+    if (kickInGraceFrames > 0 && kickInGraceCarrier && kickInGraceCarrier.hasBall && kickInGraceStartX !== null){
+      const attackDir = getAttackDir(kickInGraceCarrier.team);
+      const dx = kickInGraceCarrier.x - kickInGraceStartX;
+      // Play on if you run forward (toward attacking goal)
+      if (dx * attackDir > MARK_PLAYON_FWD){
+        kickInGraceFrames = 0;
+        kickInGraceStartX = null;
+        kickInGraceCarrier = null;
+        declarePlayOn();
+      }
+    }
   } else {
     updateCamera();
   }
@@ -4997,6 +5059,12 @@ function updatePlaying(){
         ball.lastKickedBy = player.team;
         ball.kickStartX = ball.x;
         ball.kickStartY = ball.y;
+        // v117: clear kick-in grace when possession changes
+        if (kickInGraceFrames > 0){
+          kickInGraceFrames = 0;
+          kickInGraceStartX = null;
+          kickInGraceCarrier = null;
+        }
 
         const dx = target.x - ball.x;
         const dy = target.y - ball.y;
@@ -5411,7 +5479,10 @@ function resetAfterScore(type, teamToStart, scoringEndSide=null, scoredY=null){
       starter.aimX = getAttackDir(starter.team);
       starter.aimY = clamp((OVAL_CY - starter.y) * 0.02, -0.65, 0.65);
       starter.noPickupFrames = START_UNTACKLE_FRAMES;
+      // v117: track starting position for play-on detection
       kickInGraceFrames = KICKIN_GRACE_FRAMES;
+      kickInGraceStartX = starter.x;
+      kickInGraceCarrier = starter;
       if (starter.team === 'sloths') switchControlTo(starter);
       cameraX = Math.max(0, Math.min(FIELD_WIDTH - 800, starter.x - 400));
       cameraY = starter.y - 300;
