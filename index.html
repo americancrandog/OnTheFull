@@ -1156,6 +1156,10 @@ let kickChargeFrames = 0;
 let markStopFrames = 0;
 let markX = 0;
 let markCarrier = null;
+// v140: When true, user pressed X to switch — autoSwitchControl must not override chosenSlothsInterceptorName (this frame).
+let userChoseInterceptorThisFrame = false;
+// v140: When true, user manually chose interceptor; keep them until kick ends (so autoSwitchControl does not override).
+let userChoseInterceptor = false;
 // v26: prevent instant play-on from held movement input
 let markLockFrames = 0;
 const MARK_LOCK_FRAMES = 12;
@@ -1978,14 +1982,15 @@ function getControlledPlayer(){
 }
 
 let controlSwitchCooldown = 0;
-function switchControlTo(p){
+// skipCooldown: when true (e.g. user pressed X), do not set cooldown — switch is instant and repeatable.
+function switchControlTo(p, skipCooldown){
   if (!p) return;
   // #region agent log
   debugLog('switchControlTo:called', 'switchControlTo called', {targetName:p.name,previousCooldown:controlSwitchCooldown}, 'E');
   // #endregion
   allPlayers.forEach(pl => pl.controlled=false);
   p.controlled=true;
-  controlSwitchCooldown = CONTROL_SWITCH_COOLDOWN;
+  if (!skipCooldown) controlSwitchCooldown = CONTROL_SWITCH_COOLDOWN;
 }
 
 function safeUnit(dx, dy){
@@ -2059,6 +2064,7 @@ function startTargetedFlight(toX, toY, frames, maxHeight){
   // v39: new aerial episode; reset interceptor lock
   ball.airChaseId = airChaseIdCounter++;
   ball.chosenSlothsInterceptorName = null;
+  userChoseInterceptor = false;
   ball.airChaseFrames = 0;
   ball.flightFramesLeft = f;
   ball.flightTotalFrames = f;
@@ -2620,9 +2626,15 @@ function buildOvalPath(){
 // AI HELPERS
 // ===================
 function applySeparation(){
+  // v141: Softer separation when ball is in flight — reduces jitter when players cluster near the drop.
+  // v142: Even softer between TEAMMATES when ball is in air — several Sloths near drop zone stop jittering.
+  const inAir = isKickInAir();
+  let pushMult = inAir ? 0.35 : 1.0;
   for (let i=0;i<allPlayers.length;i++){
     for (let j=i+1;j<allPlayers.length;j++){
       const a = allPlayers[i], b = allPlayers[j];
+      if (inAir && a.team === b.team) pushMult = 0.12; // teammates: minimal push when ball in air
+      else if (inAir) pushMult = 0.35;
       const dx = b.x - a.x;
       const dy = b.y - a.y;
       const d = Math.hypot(dx, dy);
@@ -2630,14 +2642,14 @@ function applySeparation(){
       if (d <= 0.0001){
         const a0 = Math.random() * Math.PI * 2;
         const ux = Math.cos(a0), uy = Math.sin(a0);
-        const push = SEPARATION_DIST * SEPARATION_PUSH;
+        const push = SEPARATION_DIST * SEPARATION_PUSH * pushMult;
         a.x -= ux * push; a.y -= uy * push;
         b.x += ux * push; b.y += uy * push;
         clampToOval(a); clampToOval(b);
         continue;
       }
       if (d < SEPARATION_DIST){
-        const push = (SEPARATION_DIST - d) * SEPARATION_PUSH;
+        const push = (SEPARATION_DIST - d) * SEPARATION_PUSH * pushMult;
         const u = { ux: dx/d, uy: dy/d };
         // v28: during a mark, don't let bodies/separation "push you over the mark"
         // and accidentally trigger play on.
@@ -2664,8 +2676,8 @@ function moveToward(p, tx, ty, spd){
   const d = Math.hypot(dx, dy);
   if (d < 1) return;
   const u = safeUnit(dx, dy);
-  // v131: Apply time scale during goal kick (but meter stays at normal speed)
-  const timeMult = (gameState === 'goalkick') ? gameTimeScale : 1.0;
+  // v139: Goal kicker stays at gameTimeScale; tacklers move 40% faster (getGoalkickTimeMult)
+  const timeMult = getGoalkickTimeMult(p);
   const step = Math.min(spd * playerSpeedFactor(p) * timeMult, d);
   p.x += u.ux * step;
   p.y += u.uy * step;
@@ -4281,8 +4293,8 @@ function moveControlledPlayer(){
   updateAimFromMovement(player);
 
   const speed = (player.hasBall ? PLAYER_SPEED_WITH_BALL : PLAYER_SPEED_NO_BALL) * playerSpeedFactor(player);
-  // v131: Apply time scale during goal kick (but meter stays at normal speed)
-  const timeMult = (gameState === 'goalkick') ? gameTimeScale : 1.0;
+  // v139: Goal kicker stays at gameTimeScale; tacklers move 40% faster (getGoalkickTimeMult)
+  const timeMult = getGoalkickTimeMult(player);
   if (keys['ArrowLeft'])  player.x -= speed * timeMult;
   if (keys['ArrowRight']) player.x += speed * timeMult;
   if (keys['ArrowUp'])    player.y -= speed * timeMult;
@@ -4292,8 +4304,9 @@ function moveControlledPlayer(){
 
 function attemptTackle(attacker, victim, isPlayerAction){
   if (!victim || !victim.hasBall) return false;
-  // v131: Prevent tackles on markCarrier during markstop (mark protection)
-  if (gameState === 'markstop' && markCarrier && victim === markCarrier) return false;
+  // v135: Prevent tackles on markCarrier during markstop OR goalkick (mark protection)
+  // Mark protection must persist even when goal kick event starts
+  if (markCarrier && victim === markCarrier && (gameState === 'markstop' || gameState === 'goalkick')) return false;
   // Don't allow instant "chain tackles" the moment someone receives it.
   if (victim.possessFrames < POSSESSION_TACKLE_GRACE_FRAMES) return false;
   // Don't tackle during the post-score pause.
@@ -4315,13 +4328,15 @@ function attemptTackle(attacker, victim, isPlayerAction){
     if (attacker.team === 'sloths') switchControlTo(attacker);
     showMessage('TACKLED!');
     playSound('tackle');
-    // v131: If tackle happens during goalkick, cancel the event and restore normal time
+    // v131: If tackle happens during goalkick, cancel the event and restore normal time/zoom
     if (gameState === 'goalkick'){
       gameState = 'playing';
       goalKickShooter = null;
       goalKickAuto = false;
       timeScaleTarget = 1.0;
       timeScaleRampFrames = TIME_SCALE_RAMP_FRAMES;
+      zoomTarget = 1.0;
+      zoomRampFrames = ZOOM_RAMP_FRAMES;
       playSound('speedup');
     }
     return true;
@@ -4338,13 +4353,15 @@ function attemptTackle(attacker, victim, isPlayerAction){
     attacker.tackleCooldown = AI_TACKLE_COOLDOWN;
     showMessage('TACKLED!');
     playSound('tackle');
-    // v131: If tackle happens during goalkick, cancel the event and restore normal time
+    // v131: If tackle happens during goalkick, cancel the event and restore normal time/zoom
     if (gameState === 'goalkick'){
       gameState = 'playing';
       goalKickShooter = null;
       goalKickAuto = false;
       timeScaleTarget = 1.0;
       timeScaleRampFrames = TIME_SCALE_RAMP_FRAMES;
+      zoomTarget = 1.0;
+      zoomRampFrames = ZOOM_RAMP_FRAMES;
       playSound('speedup');
     }
     return true;
@@ -4357,13 +4374,15 @@ function attemptTackle(attacker, victim, isPlayerAction){
     attacker.tackleCooldown = AI_TACKLE_COOLDOWN;
     showMessage('TACKLED!');
     playSound('tackle');
-    // v131: If tackle happens during goalkick, cancel the event and restore normal time
+    // v131: If tackle happens during goalkick, cancel the event and restore normal time/zoom
     if (gameState === 'goalkick'){
       gameState = 'playing';
       goalKickShooter = null;
       goalKickAuto = false;
       timeScaleTarget = 1.0;
       timeScaleRampFrames = TIME_SCALE_RAMP_FRAMES;
+      zoomTarget = 1.0;
+      zoomRampFrames = ZOOM_RAMP_FRAMES;
       playSound('speedup');
     }
     return true;
@@ -4393,6 +4412,7 @@ function resolveCatch(possessor){
     switchControlTo(possessor);
     // Clear any stale interceptor lock so control switching works properly
     ball.chosenSlothsInterceptorName = null;
+    userChoseInterceptor = false;
     controlSwitchCooldown = 0;
   }
 
@@ -4408,11 +4428,13 @@ function resolveCatch(possessor){
     playSound('mark');
     
     if (wasInGoalkick){
-      // Cancel goalkick event and restore normal time
+      // Cancel goalkick event and restore normal time/zoom
       goalKickShooter = null;
       goalKickAuto = false;
       timeScaleTarget = 1.0;
       timeScaleRampFrames = TIME_SCALE_RAMP_FRAMES;
+      zoomTarget = 1.0;
+      zoomRampFrames = ZOOM_RAMP_FRAMES;
       playSound('speedup');
     }
 
@@ -4620,6 +4642,13 @@ function performChargedKick(){
   ball.kickType = null;
   endContest();
 
+  // v144: reset receiver/auto-switch lock state for the NEW flight (prevents stale lock bugs)
+  ball.chosenSlothsInterceptorName = null;
+  ball.airChaseFrames = 0;
+  ball.airChaseId = null;
+  userChoseInterceptor = false;
+  userChoseInterceptorThisFrame = false;
+
   // v124: Calculate distance linearly from tap (20m) to full hold (max based on stats)
   // Tap = 20m = 180 units (METRE = 9, so 20m = 180 units)
   // Full = max distance based on LONG_KICK stat
@@ -4676,19 +4705,21 @@ function performChargedKick(){
   // Kick in the specified direction
   const flight = planFlightFrames(dist, airSpeed, framesMin, framesMax);
   startTargetedFlight(toX, toY, flight, height);
-  
+
+  // v144: ensure landing marker scaling uses kickoff height for punts
   if (kickType === 'punt'){
     ball.landingMarkerStartHeight = ball.flightMaxHeight;
-    
-    // v44: choose/switch based on the SAME drop zone used by the circle + mark-award.
-    const dp = predictDropZoneCenter();
-    const chase = nearestPlayer(player.team, dp.x, dp.y).best;
+  }
+
+  // INSTANT receiver control at kick moment for LONG KICKS (punts)
+  if (player.team === 'sloths' && kickType === 'punt'){
+    const dp = predictDropZoneCenter(); // same drop zone logic used elsewhere
+    const chase = nearestPlayer('sloths', dp.x, dp.y).best;
     if (chase){
-      if (player.team === 'sloths'){
-        ball.chosenSlothsInterceptorName = chase.name;
-        ball.airChaseFrames = 0;
-      }
-      switchControlTo(chase);
+      ball.chosenSlothsInterceptorName = chase.name;
+      ball.airChaseFrames = 0;
+      if (!ball.airChaseId) ball.airChaseId = airChaseIdCounter++;
+      switchControlTo(chase, true); // skip cooldown so it snaps immediately
     }
   }
 
@@ -4717,6 +4748,22 @@ let timeScaleTarget = 1.0;
 let timeScaleRampFrames = 0;
 const TIME_SCALE_RAMP_FRAMES = 45; // 0.75 seconds at 60fps
 
+// ===================
+// GOAL KICK ZOOM (v131)
+// ===================
+// Zoom scale: 1.0 = normal, 2.0 = 2x zoom
+let gameZoom = 1.0;
+let zoomTarget = 1.0;
+let zoomRampFrames = 0;
+const ZOOM_RAMP_FRAMES = 45; // 0.75 seconds at 60fps (same as time scale)
+
+// v139: During goalkick, tacklers move 40% faster than goal kicker (increases pressure)
+function getGoalkickTimeMult(playerOrNull){
+  if (gameState !== 'goalkick') return 1.0;
+  if (playerOrNull && playerOrNull === goalKickShooter) return gameTimeScale;
+  return gameTimeScale * 1.4; // tacklers/others 40% faster
+}
+
 function enterGoalKick(shooter, auto=false){
   const p = shooter || getControlledPlayer();
   if (!p) return;
@@ -4736,7 +4783,21 @@ function enterGoalKick(shooter, auto=false){
   if (gameTimeScale !== 1.0) gameTimeScale = 1.0;
   timeScaleTarget = 0.3;
   timeScaleRampFrames = TIME_SCALE_RAMP_FRAMES;
+  
+  // v131: Start zoom ramp (1.0x -> 2.0x over 0.75 seconds)
+  if (gameZoom !== 1.0) gameZoom = 1.0;
+  zoomTarget = 2.0;
+  zoomRampFrames = ZOOM_RAMP_FRAMES;
+  
   playSound('slowdown');
+  
+  // v136: Immediately snap camera to ball so zoom is centered on ball from frame 1
+  // (Otherwise camera lags and zoom centers on wrong position in forward pocket)
+  cameraX = Math.max(0, Math.min(FIELD_WIDTH - 800, ball.x - 400));
+  const camMinY = (OVAL_CY - OVAL_B) - 60;
+  const camMaxY = (OVAL_CY + OVAL_B) - 540;
+  cameraY = Math.max(camMinY, Math.min(camMaxY, ball.y - 300));
+  
   // AI aims near the middle; longer distance = more variance.
   if (auto){
     const goalX = getGoalXForTeam(p.team);
@@ -4772,6 +4833,25 @@ function enterGoalKick(shooter, auto=false){
 }
 
 function updateGoalKick(){
+  // v137: Recalculate meter speed based on CURRENT position (player may have moved during slow-mo)
+  // This ensures meter speed scales correctly with proximity to goal even if player runs forward
+  if (goalKickShooter){
+    const p = goalKickShooter;
+    const gx = getGoalXForTeam(p.team);
+    const distToGoal = Math.max(0, Math.min(FIFTY_METRE, Math.abs(p.x - gx)));
+    
+    // Recalculate angle multiplier based on current position
+    const xOff = Math.max(1, Math.abs(p.x - gx));
+    const yOff = Math.abs(p.y - OVAL_CY);
+    const ang = Math.atan2(yOff, xOff);
+    const angN = clamp(ang / (Math.PI/2), 0, 1);
+    const angleMult = 1 + angN * 0.65;
+    
+    // Recalculate speed based on current distance and angle
+    goalKickSpeed = (1.0 + (distToGoal / FIFTY_METRE) * 3.9) * 3.5 * angleMult;
+    goalKickSpeed *= goalKickMeterMult(p);
+  }
+  
   goalKickMeter += goalKickDirection * goalKickSpeed;
   if (goalKickMeter > 100){ goalKickMeter = 100; goalKickDirection = -1; }
   if (goalKickMeter < -100){ goalKickMeter = -100; goalKickDirection = 1; }
@@ -4863,6 +4943,12 @@ function executeGoalKick(){
   if (gameTimeScale !== 0.3) gameTimeScale = 0.3;
   timeScaleTarget = 1.0;
   timeScaleRampFrames = TIME_SCALE_RAMP_FRAMES;
+  
+  // v131: Start zoom out ramp (2.0x -> 1.0x over 0.75 seconds)
+  if (gameZoom !== 2.0) gameZoom = 2.0;
+  zoomTarget = 1.0;
+  zoomRampFrames = ZOOM_RAMP_FRAMES;
+  
   playSound('speedup');
 }
 
@@ -4870,12 +4956,14 @@ function executeGoalKick(){
 // CAMERA + CONTROL SWITCHING
 // ===================
 function updateCamera(){
-  // During the goal-shot meter, camera should follow the shooter (player or AI).
-  if (gameState === 'goalkick' && goalKickShooter){
-    const tx = goalKickShooter.x;
-    const ty = goalKickShooter.y;
-    cameraX += (tx - 400 - cameraX) * 0.12;
-    cameraY += (ty - 300 - cameraY) * 0.12;
+  // v136: During the goal-shot meter, camera must LOCK on the BALL so zoom stays centered
+  // Use strong follow so ball never drifts off center (critical in forward pocket)
+  if (gameState === 'goalkick'){
+    const tx = ball.x;
+    const ty = ball.y;
+    // Snap toward ball quickly so zoom center (ball screen pos) stays correct
+    cameraX += (tx - 400 - cameraX) * 0.85;
+    cameraY += (ty - 300 - cameraY) * 0.85;
     cameraX = Math.max(0, Math.min(FIELD_WIDTH - 800, cameraX));
     const minY = (OVAL_CY - OVAL_B) - 60;
     const maxY = (OVAL_CY + OVAL_B) - 540;
@@ -4915,6 +5003,13 @@ function autoSwitchControl(){
   // v35: lock-on to ONE interceptor early and stick to them (no jitter).
   // Also: don't rely on team AI choosing it; always hand control to the chosen player immediately.
   if (enemyKickInAir && !ctrl.hasBall){
+    // v140: If user pressed X to switch, never override — stick with their choice (nearest to ball).
+    // v141: Do not set cooldown here so user can press X again immediately.
+    if ((userChoseInterceptorThisFrame || userChoseInterceptor) && ball.chosenSlothsInterceptorName){
+      const locked = allPlayers.find(p => p.team === 'sloths' && p.name === ball.chosenSlothsInterceptorName);
+      if (locked && !locked.controlled) switchControlTo(locked, true);
+      return;
+    }
     if (!ball.airChaseId) ball.airChaseId = airChaseIdCounter++;
     ball.airChaseFrames = (ball.airChaseFrames || 0) + 1;
     const drop = predictDropZoneCenter();
@@ -4966,14 +5061,26 @@ function autoSwitchControl(){
 
   // v44: on YOUR kicks, keep you on the true receiver for the drop zone.
   if (slothsKickInAir && !ctrl.hasBall){
+
+    // v144: If user pressed X to choose receiver, NEVER override — stick with their choice.
+    // Also: don't set cooldown so user can press X repeatedly with no lag.
+    if ((userChoseInterceptorThisFrame || userChoseInterceptor) && ball.chosenSlothsInterceptorName){
+      const locked = allPlayers.find(p => p.team === 'sloths' && p.name === ball.chosenSlothsInterceptorName);
+      if (locked && !locked.controlled) switchControlTo(locked, true);
+      return;
+    }
+
     const drop = predictDropZoneCenter();
     const bestNow = nearestPlayer('sloths', drop.x, drop.y).best;
+
     if (!ball.chosenSlothsInterceptorName){
       ball.chosenSlothsInterceptorName = bestNow?.name || null;
     }
+
     const locked = ball.chosenSlothsInterceptorName
       ? allPlayers.find(p => p.team === 'sloths' && p.name === ball.chosenSlothsInterceptorName)
       : null;
+
     if (locked && !locked.controlled){
       switchControlTo(locked);
       controlSwitchCooldown = 12;
@@ -5014,7 +5121,9 @@ function autoSwitchControl(){
     return;
   }
 
-  if (ball.free && !ball.intendedTarget){
+  // IMPORTANT: While a kick is in the air, do NOT use ball.x/ball.y for auto-switching.
+  // On the kick frame ball.x/ball.y is still at the boot, which snaps control back to the kicker.
+  if (ball.free && !ball.intendedTarget && !isKickInAir()){
     const candidate = nearestPlayer('sloths', ball.x, ball.y).best;
     // #region agent log
     const dropZone = isKickInAir() ? predictDropZoneCenter() : null;
@@ -5041,10 +5150,22 @@ function updateTeamAI(){
   const hotX = ball.x;
   const hotY = ball.y;
 
+  // v135: Mark protection - prevent pursuit of markCarrier during markstop OR goalkick (unless play-on)
+  // Mark protection must persist even when goal kick event starts
+  // Check if we're in markstop/goalkick and if play-on conditions are NOT met
+  let isMarkProtected = false;
+  if (markCarrier && markCarrier.hasBall && (gameState === 'markstop' || gameState === 'goalkick')){
+    const attackDir = getAttackDir(markCarrier.team);
+    const dx = markCarrier.x - markX;
+    const isPlayOn = (markLockFrames <= 0 && (dx * attackDir > MARK_PLAYON_FWD || dx * attackDir < -MARK_BACK_ALLOW));
+    isMarkProtected = !isPlayOn;
+  }
+
   // v116: after kick-in/out-on-full grace ends, force a brief defensive engagement so
   // the carrier doesn't get "left alone forever" in the backline.
+  // v133: BUT skip this if mark is protected (defenders must stand off)
   const carrierNow = slothCarrier || bearCarrier;
-  if (kickInPlayOnBoostFrames > 0 && carrierNow){
+  if (kickInPlayOnBoostFrames > 0 && carrierNow && !isMarkProtected){
     const oppTeam = (carrierNow.team === 'sloths') ? 'dropbears' : 'sloths';
     const press = allPlayers
       .filter(pp => pp.team === oppTeam && !pp.hasBall)
@@ -5096,22 +5217,11 @@ function updateTeamAI(){
     const oppTeam = kickTeam ? ((kickTeam === 'sloths') ? 'dropbears' : 'sloths') : null;
 
     if (kickTeam && oppTeam){
-      const kickDist = (ball.flightTotalFrames > 0 && ball.flightT < 1)
-        ? Math.hypot(ball.flightToX - ball.flightFromX, ball.flightToY - ball.flightFromY)
-        : Math.hypot(ball.x - ball.kickStartX, ball.y - ball.kickStartY);
-      const isMarkableKick = kickDist >= MARK_MIN_KICK_DIST;
-      // v95: prevent double-AI jitter — only ONE primary marker per team goes to the mark.
+      // v140: Only ONE opponent goes to the mark zone — no second opponent (fixes double rush + jitter).
       const kickPrimary = nearestN(kickTeam, dropX, dropY, 1);
       const oppPrimary = nearestN(oppTeam, dropX, dropY, 1);
       if (kickPrimary[0]) airPack.add(kickPrimary[0]);
       if (oppPrimary[0]) airPack.add(oppPrimary[0]);
-
-      // If it's a genuinely contested markable kick, add ONE extra opponent (max 3 total).
-      if (isMarkableKick){
-        const opp2 = nearestN(oppTeam, dropX, dropY, 2)[1];
-        const dOther = nearestPlayer(oppTeam, dropX, dropY).dist;
-        if (opp2 && dOther < (CONTEST_RADIUS * 1.15)) airPack.add(opp2);
-      }
     } else {
       // Throw-in: 1 from each team + one extra closest overall
       for (const pp of nearestN('sloths', dropX, dropY, 1)) airPack.add(pp);
@@ -5131,6 +5241,7 @@ function updateTeamAI(){
     // clear aerial chase id once play is grounded
     ball.airChaseId = 0;
     ball.chosenSlothsInterceptorName = null;
+    userChoseInterceptor = false;
     const cs = nearestN('sloths', hotX, hotY, 1);
     const cb = nearestN('dropbears', hotX, hotY, 1);
     if (cs[0]) looseChasersSloths.add(cs[0]);
@@ -5148,8 +5259,8 @@ function updateTeamAI(){
       if (d < stand){
         const u = safeUnit(p.x - carrier.x, p.y - carrier.y);
         if (!p.controlled){
-          // v131: Apply time scale during goal kick (but meter stays at normal speed)
-          const timeMult = (gameState === 'goalkick') ? gameTimeScale : 1.0;
+          // v139: Tacklers move 40% faster during goalkick
+          const timeMult = getGoalkickTimeMult(p);
           p.x += u.ux * (AI_SPEED_ZONE * 1.25) * timeMult;
           p.y += u.uy * (AI_SPEED_ZONE * 1.25) * timeMult;
           clampToOval(p);
@@ -5158,15 +5269,16 @@ function updateTeamAI(){
       }
     }
 
-    // Mark protection: defenders must stand off.
-    if (gameState === 'markstop' && markCarrier){
+    // v135: Mark protection: defenders must stand off during markstop OR goalkick
+    // Mark protection must persist even when goal kick event starts
+    if (markCarrier && (gameState === 'markstop' || gameState === 'goalkick')){
       if (p.team !== markCarrier.team){
         const d = Math.hypot(p.x - markCarrier.x, p.y - markCarrier.y);
         if (d < MARK_STANDOFF_DIST){
           const u = safeUnit(p.x - markCarrier.x, p.y - markCarrier.y);
           if (!p.controlled){
-            // v131: Apply time scale during goal kick (but meter stays at normal speed)
-            const timeMult = (gameState === 'goalkick') ? gameTimeScale : 1.0;
+            // v139: Tacklers move 40% faster during goalkick
+            const timeMult = getGoalkickTimeMult(p);
             p.x += u.ux * (AI_SPEED_ZONE * 1.2) * timeMult;
             p.y += u.uy * (AI_SPEED_ZONE * 1.2) * timeMult;
             clampToOval(p);
@@ -5196,16 +5308,21 @@ function updateTeamAI(){
         if (enemyKickToSloths && p.team === 'sloths' && !p.controlled){
           // v48: don't freeze — move into a sensible supporting position near the drop
           // but OUTSIDE the drop-zone circle so you aren't "auto-marking" for the human.
+          // v142: Use a STABLE drop target (set once per flight) so teammates don't jitter chasing a moving prediction.
           const r = dropZoneRadiusAt(dropY);
           if (p.airChaseId !== ball.airChaseId){
             p.airChaseId = ball.airChaseId;
+            p.airTargetDropX = dropX;
+            p.airTargetDropY = dropY;
             const a = Math.random() * Math.PI * 2;
             const rr = r + 90 + Math.random()*45;
             p.airOffX = Math.cos(a) * rr;
             p.airOffY = Math.sin(a) * rr;
           }
-          let tx = dropX + p.airOffX;
-          let ty = dropY + p.airOffY;
+          const tdx = p.airTargetDropX ?? dropX;
+          const tdy = p.airTargetDropY ?? dropY;
+          let tx = tdx + p.airOffX;
+          let ty = tdy + p.airOffY;
           // Bring mids/ruck into the centre corridor so you don't get outnumbered.
           if (p.band === 'mid' || p.band === 'ruck'){
             tx = tx * 0.55 + OVAL_CX * 0.45;
@@ -5220,14 +5337,18 @@ function updateTeamAI(){
           const r = dropZoneRadiusAt(dropY);
           const attackDir = getAttackDir('sloths');
 
-          // Pick a stable per-flight support offset (not random every frame).
+          // v142: Stable drop target per flight — prevents teammate jitter around the mark drop zone.
           if (p.airChaseId !== ball.airChaseId){
             p.airChaseId = ball.airChaseId;
+            p.airTargetDropX = dropX;
+            p.airTargetDropY = dropY;
             const a = Math.random() * Math.PI * 2;
             const rr = r + 95 + Math.random()*55;
             p.airOffX = Math.cos(a) * rr;
             p.airOffY = Math.sin(a) * rr;
           }
+          const tdx = p.airTargetDropX ?? dropX;
+          const tdy = p.airTargetDropY ?? dropY;
 
           // Bias by band so support looks "sensible".
           let bx = 0, by = 0;
@@ -5235,7 +5356,7 @@ function updateTeamAI(){
           else if (p.band === 'back') bx = -attackDir * (r + 120);
           else by = (Math.random() < 0.5 ? -1 : 1) * (r + 110);
 
-          moveToward(p, dropX + p.airOffX + bx, dropY + p.airOffY + by, AI_SPEED_ZONE * 1.05);
+          moveToward(p, tdx + p.airOffX + bx, tdy + p.airOffY + by, AI_SPEED_ZONE * 1.05);
           continue;
         }
         // v31+: AI shouldn't be perfectly under it every time IF contested.
@@ -5275,20 +5396,19 @@ function updateTeamAI(){
               bx = u.ux * bumpR;
               by = u.uy * bumpR;
             }
-            // Add a perpendicular zig-zag so it looks like jockeying rather than fleeing.
+            // v141: Softer, less frequent zigzag — reduces jitter when players cluster near the drop.
             p.airWanderTimer--;
             if (p.airWanderTimer <= 0){
-              p.airWanderTimer = 6 + Math.floor(Math.random()*9);
+              p.airWanderTimer = 10 + Math.floor(Math.random() * 8); // less frequent updates
               const flip = (Math.random() < 0.5) ? -1 : 1;
-              // perpendicular to bump vector (or to attack dir if no opponent)
               let px = 0, py = 0;
               if (bx !== 0 || by !== 0){
                 const pu = safeUnit(-by, bx);
-                px = pu.ux * 14 * flip;
-                py = pu.uy * 14 * flip;
+                px = pu.ux * 8 * flip;  // smaller step (was 14)
+                py = pu.uy * 8 * flip;
               } else {
                 px = 0;
-                py = 14 * flip;
+                py = 8 * flip;
               }
               p.airOffX = clamp(bx + px, -34, 34);
               p.airOffY = clamp(by + py, -34, 34);
@@ -5405,10 +5525,26 @@ function updateTimeScale(){
   }
 }
 
+function updateZoom(){
+  // v131: Ramp zoom smoothly toward target (same timing as time scale)
+  if (zoomRampFrames > 0){
+    const progress = 1 - (zoomRampFrames / ZOOM_RAMP_FRAMES);
+    // Use current zoom as starting point for smooth transitions
+    const startZoom = gameZoom;
+    gameZoom = startZoom + (zoomTarget - startZoom) * progress;
+    zoomRampFrames--;
+  } else {
+    gameZoom = zoomTarget;
+  }
+}
+
 function update(){
-  // v131: Update time scale ramp
+  // v131: Update time scale and zoom ramps
   updateTimeScale();
-  
+  updateZoom();
+  // v140: Reset so autoSwitchControl can run normally next frame (X-press override is one-frame only)
+  userChoseInterceptorThisFrame = false;
+
   // v113: no simulation while in menus
   if (uiScreen !== UI_SCREEN.GAME) return;
   // v101: hard pause (freeze all gameplay + timers)
@@ -5508,17 +5644,23 @@ function update(){
     updateCamera();
     updateMiniMapCamera();
 
-    // Play-on detection during protected mark
-    if (gameState === 'markstop' && markCarrier && markCarrier.hasBall){
+    // v137/v138: Play-on detection during protected mark (works during markstop OR goalkick)
+    // Mark protection must end if player moves forward, even during goal kick event
+    if (markCarrier && markCarrier.hasBall && (gameState === 'markstop' || gameState === 'goalkick')){
       const attackDir = getAttackDir(markCarrier.team);
       const dx = markCarrier.x - markX;
       // Play on if you move toward the goal you're attacking.
       // Also play on if you retreat too far away from the attacking goal.
       if (markLockFrames <= 0 && (dx * attackDir > MARK_PLAYON_FWD || dx * attackDir < -MARK_BACK_ALLOW)){
-        gameState = 'playing';
         markStopFrames = 0;
         markCarrier = null;
         declarePlayOn();
+        // v138: If we were in goalkick, STAY in goalkick (zoom + meter remain active)
+        // but tacklers can now tackle because markCarrier is cleared
+        if (gameState === 'markstop'){
+          gameState = 'playing';
+        }
+        // If gameState was 'goalkick', leave it as 'goalkick' - event stays active
       }
     }
 
@@ -5593,6 +5735,8 @@ function updatePlaying(){
       debugLog('updatePlaying:X_no_ball', 'X pressed without ball', {slothsInPossession:slothsInPossession,isKickInAir:isKickInAir(),ballFree:ball.free,ballX:ball.x,ballY:ball.y}, 'A');
       // #endregion
       if (!slothsInPossession){
+        // v141: Pressing X always clears any switch cooldown — switch is instant and every time.
+        controlSwitchCooldown = 0;
         // Cancel any stale kick charge so the previous offense input can't "leak" into defense.
         kickCharging = false;
         kickChargeFrames = 0;
@@ -5603,30 +5747,31 @@ function updatePlaying(){
         debugLog('updatePlaying:X_after_tackle', 'After tackle attempt', {tackled:tackled,isKickInAir:isKickInAir(),ballFree:ball.free,victimFound:!!victim}, 'A');
         // #endregion
         if (!tackled){
-          // If the opponent is carrying, the ball is offset from the carrier.
-          // Use carrier position so "nearest the ball" feels correct.
-          const bearCarrier = allPlayers.find(pp => pp.team === 'dropbears' && pp.hasBall);
-          const tx = bearCarrier ? bearCarrier.x : ball.x;
-          const ty = bearCarrier ? bearCarrier.y : ball.y;
+          // v140: X always switches to Sloths player NEAREST THE BALL (ball.x, ball.y). No exceptions.
+          const candidate = nearestPlayer('sloths', ball.x, ball.y).best;
           // #region agent log
           const dropZone = isKickInAir() ? predictDropZoneCenter() : null;
-          debugLog('updatePlaying:X_find_nearest', 'Finding nearest player for X switch', {isKickInAir:isKickInAir(),bearCarrier:!!bearCarrier,useX:tx,useY:ty,ballX:ball.x,ballY:ball.y,dropZoneX:dropZone?.x,dropZoneY:dropZone?.y}, 'D');
-          // #endregion
-          const candidate = nearestPlayer('sloths', tx, ty).best;
-          // #region agent log
           const nearestToDrop = isKickInAir() ? nearestPlayer('sloths', dropZone.x, dropZone.y).best : null;
-          debugLog('updatePlaying:X_candidate', 'X switch candidate found', {candidateFound:!!candidate,candidateName:candidate?.name,candidateControlled:candidate?.controlled,nearestToDropName:nearestToDrop?.name,nearestToDropControlled:nearestToDrop?.controlled,chosenInterceptor:ball.chosenSlothsInterceptorName}, 'A');
+          debugLog('updatePlaying:X_find_nearest', 'X switch: nearest to ball', {ballX:ball.x,ballY:ball.y,candidateName:candidate?.name,nearestToDropName:nearestToDrop?.name}, 'D');
+          debugLog('updatePlaying:X_candidate', 'X switch candidate found', {candidateFound:!!candidate,candidateName:candidate?.name,candidateControlled:candidate?.controlled,chosenInterceptor:ball.chosenSlothsInterceptorName}, 'A');
           // #endregion
-          if (candidate && !candidate.controlled) {
-            switchControlTo(candidate);
-            // Override the automatic drop-zone selection - player explicitly chose this.
-            ball.chosenSlothsInterceptorName = null; // clear any existing lock
+          if (candidate) {
+            // Always lock the user's choice, even if they're already controlling that player.
             ball.chosenSlothsInterceptorName = candidate.name;
-            // Remove extra cooldown so manual switching always works.
-            controlSwitchCooldown = 0;
-            // #region agent log
-            debugLog('updatePlaying:X_switched', 'X switch executed', {switchedTo:candidate.name,cooldownCleared:true}, 'A');
-            // #endregion
+            userChoseInterceptorThisFrame = true; // prevent autoSwitchControl from overriding this frame
+            userChoseInterceptor = true;          // keep this choice until kick ends
+
+            // Only switch control if needed
+            if (!candidate.controlled) {
+              switchControlTo(candidate, true); // skip cooldown so X is instant and repeatable
+            }
+
+            debugLog(
+              'updatePlaying:X_switched',
+              'X switch executed (or locked current)',
+              { switchedTo: candidate.name, alreadyControlled: candidate.controlled, cooldownCleared: true },
+              'A'
+            );
           }
         }
       } else {
@@ -5744,8 +5889,8 @@ function updatePlaying(){
 
     // Only walk it up when not under pressure.
     const spd = AI_SPEED_BASE * playerSpeedFactor(bearCarrier);
-    // v131: Apply time scale during goal kick (but meter stays at normal speed)
-    const timeMult = (gameState === 'goalkick') ? gameTimeScale : 1.0;
+    // v139: Goal kicker (bearCarrier) stays at gameTimeScale; tacklers get 40% faster elsewhere
+    const timeMult = getGoalkickTimeMult(bearCarrier);
     bearCarrier.x += run.ux * spd * timeMult;
     bearCarrier.y += run.uy * spd * 0.60 * timeMult;
     clampToOval(bearCarrier);
@@ -5764,6 +5909,7 @@ function updatePlaying(){
       // v41: reset interceptor lock for legacy punt flights
       ball.airChaseId = airChaseIdCounter++;
       ball.chosenSlothsInterceptorName = null;
+      userChoseInterceptor = false;
       ball.airChaseFrames = 0;
       ball.kickStartX = ball.x;
       ball.kickStartY = ball.y;
@@ -5788,6 +5934,7 @@ function updatePlaying(){
       // v41: reset interceptor lock for legacy punt flights
       ball.airChaseId = airChaseIdCounter++;
       ball.chosenSlothsInterceptorName = null;
+      userChoseInterceptor = false;
       ball.airChaseFrames = 0;
       ball.kickStartX = ball.x;
       ball.kickStartY = ball.y;
@@ -5911,6 +6058,7 @@ function updatePlaying(){
   if (ball.kickType === 'punt' && ball.flightTotalFrames <= 0 && ball.height <= 1.5){
     ball.airChaseId = 0;
     ball.chosenSlothsInterceptorName = null;
+    userChoseInterceptor = false;
     ball.airChaseFrames = 0;
   }
 
@@ -6082,6 +6230,19 @@ function gameLoop(ts){
     ctx.save();
     ctx.scale(2, 2);
     
+    // v134: Apply zoom to field only (not UI elements)
+    // Zoom MUST be centered on the ball's actual screen position
+    if (gameZoom !== 1.0){
+      // Get ball's screen position (in 800x600 space after 2x scale)
+      const ballScreenX = worldToScreenX(ball.x);
+      const ballScreenY = worldToScreenY(ball.y);
+      // Center zoom on the ball's actual position
+      ctx.translate(ballScreenX, ballScreenY);
+      ctx.scale(gameZoom, gameZoom);
+      ctx.translate(-ballScreenX, -ballScreenY);
+    }
+    
+    // Field rendering (affected by zoom)
     drawField();
     drawGoalPosts();
     drawLandingMarker();
@@ -6090,7 +6251,15 @@ function gameLoop(ts){
     if (ball.height < 15) drawBall();
     sorted.forEach(drawPlayer);
     if (ball.height >= 15) drawBall();
+    
+    // v131: Restore zoom transform before drawing UI (UI not affected by zoom)
+    if (gameZoom !== 1.0){
+      ctx.restore(); // Restore zoom transform
+      ctx.save(); // Save again for UI rendering
+      ctx.scale(2, 2); // Re-apply base 2x scale for UI
+    }
 
+    // UI elements (NOT affected by zoom)
     drawKickMeter();
     drawUI();
     drawControlledPlayerHUD();
