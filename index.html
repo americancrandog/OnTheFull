@@ -75,6 +75,35 @@ ctx.imageSmoothingEnabled = false;
 // ===================
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
+// ===================
+// AUDIO SETTINGS (v129)
+// ===================
+// Volume sliders run 0..100 in 10% steps.
+// - Music defaults to 50% because the looping track was previously hard-coded to 0.5 volume.
+// - SFX defaults to 100% and applies to *all* sound effects.
+let musicVolumePct = 50;
+let sfxVolumePct = 100;
+
+function clampPct10(p){
+  const n = Math.round((Number(p) || 0) / 10) * 10;
+  return Math.max(0, Math.min(100, n));
+}
+
+// Master gain for all sound effects.
+const sfxMasterGain = audioCtx.createGain();
+sfxMasterGain.gain.value = sfxVolumePct / 100;
+sfxMasterGain.connect(audioCtx.destination);
+
+function setMusicVolumePct(p){
+  musicVolumePct = clampPct10(p);
+  if (bgmAudio) bgmAudio.volume = musicVolumePct / 100;
+}
+function setSfxVolumePct(p){
+  sfxVolumePct = clampPct10(p);
+  // Apply immediately to all current/future SFX.
+  sfxMasterGain.gain.setValueAtTime(sfxVolumePct / 100, audioCtx.currentTime);
+}
+
 //
 // ===================
 // BACKGROUND MUSIC (MP3 embedded as Base64)
@@ -90,7 +119,16 @@ function initBGM(){
   bgmAudio.src = 'data:audio/mpeg;base64,' + BGM_MP3_BASE64;
   bgmAudio.loop = true;
   bgmAudio.preload = 'auto';
-  bgmAudio.volume = 0.5; // 50% volume
+  bgmAudio.volume = musicVolumePct / 100;
+  
+  // v130: Trim 0.5 seconds off the end of the loop
+  bgmAudio.addEventListener('timeupdate', () => {
+    if (!bgmAudio || !isFinite(bgmAudio.duration)) return;
+    // If we're within 0.5 seconds of the end, loop back to start
+    if (bgmAudio.currentTime >= bgmAudio.duration - 0.5) {
+      bgmAudio.currentTime = 0;
+    }
+  });
 }
 
 async function startBGM(){
@@ -124,6 +162,23 @@ function stopBGM(){
   try { bgmAudio.currentTime = 0; } catch(e) {}
 }
 
+function restartBGM(){
+  // v130: Restart music from the beginning
+  if (!bgmAudio) {
+    startBGM();
+    return;
+  }
+  try {
+    bgmAudio.currentTime = 0;
+    if (uiScreen === UI_SCREEN.GAME && !isPaused && gameState !== 'fulltime') {
+      bgmAudio.play().catch(()=>{});
+    }
+  } catch(e) {
+    // If restart fails, try starting fresh
+    startBGM();
+  }
+}
+
 
 function playSound(type){
   if(audioCtx.state === 'suspended') audioCtx.resume();
@@ -147,7 +202,7 @@ function playSound(type){
       const osc = audioCtx.createOscillator();
       const gain = audioCtx.createGain();
       osc.connect(gain);
-      gain.connect(audioCtx.destination);
+      gain.connect(sfxMasterGain);
       osc.type = 'square';
       osc.frequency.setValueAtTime(150, now);
       osc.frequency.exponentialRampToValueAtTime(60, now + 0.1);
@@ -162,7 +217,7 @@ function playSound(type){
       const osc = audioCtx.createOscillator();
       const gain = audioCtx.createGain();
       osc.connect(gain);
-      gain.connect(audioCtx.destination);
+      gain.connect(sfxMasterGain);
       osc.type = 'triangle';
       osc.frequency.setValueAtTime(220, now);
       osc.frequency.exponentialRampToValueAtTime(110, now + 0.08);
@@ -180,7 +235,7 @@ function playSound(type){
       const o1 = audioCtx.createOscillator();
       const g1 = audioCtx.createGain();
       o1.connect(g1);
-      g1.connect(audioCtx.destination);
+      g1.connect(sfxMasterGain);
       o1.type = 'sine';
       o1.frequency.setValueAtTime(95, now);
       o1.frequency.exponentialRampToValueAtTime(38, now + 0.24);
@@ -192,7 +247,7 @@ function playSound(type){
       const o2 = audioCtx.createOscillator();
       const g2 = audioCtx.createGain();
       o2.connect(g2);
-      g2.connect(audioCtx.destination);
+      g2.connect(sfxMasterGain);
       o2.type = 'square';
       o2.frequency.setValueAtTime(170, now);
       o2.frequency.exponentialRampToValueAtTime(70, now + 0.18);
@@ -209,7 +264,7 @@ function playSound(type){
       const ng = audioCtx.createGain();
       src.connect(hp);
       hp.connect(ng);
-      ng.connect(audioCtx.destination);
+      ng.connect(sfxMasterGain);
       ng.gain.setValueAtTime(0.0001, now);
       ng.gain.linearRampToValueAtTime(0.10, now + 0.002);
       ng.gain.exponentialRampToValueAtTime(0.01, now + 0.05);
@@ -224,7 +279,7 @@ function playSound(type){
       const osc = audioCtx.createOscillator();
       const gain = audioCtx.createGain();
       osc.connect(gain);
-      gain.connect(audioCtx.destination);
+      gain.connect(sfxMasterGain);
       osc.type = 'triangle';
       osc.frequency.setValueAtTime(300, now);
       osc.frequency.exponentialRampToValueAtTime(150, now + 0.06);
@@ -248,7 +303,7 @@ function playSound(type){
       const gain = audioCtx.createGain();
       src.connect(bp);
       bp.connect(gain);
-      gain.connect(audioCtx.destination);
+      gain.connect(sfxMasterGain);
 
       gain.gain.setValueAtTime(0.0001, now);
       gain.gain.linearRampToValueAtTime(0.18, now + 0.004);
@@ -258,7 +313,7 @@ function playSound(type){
       const o1 = audioCtx.createOscillator();
       const g1 = audioCtx.createGain();
       o1.connect(g1);
-      g1.connect(audioCtx.destination);
+      g1.connect(sfxMasterGain);
       o1.type = 'sine';
       o1.frequency.setValueAtTime(190, now);
       o1.frequency.exponentialRampToValueAtTime(120, now + 0.08);
@@ -270,7 +325,7 @@ function playSound(type){
       const o2 = audioCtx.createOscillator();
       const g2 = audioCtx.createGain();
       o2.connect(g2);
-      g2.connect(audioCtx.destination);
+      g2.connect(sfxMasterGain);
       o2.type = 'square';
       o2.frequency.setValueAtTime(1400, now);
       g2.gain.setValueAtTime(0.0001, now);
@@ -303,7 +358,7 @@ function playSound(type){
       src.connect(bp);
       bp.connect(lp);
       lp.connect(gain);
-      gain.connect(audioCtx.destination);
+      gain.connect(sfxMasterGain);
 
       gain.gain.setValueAtTime(0.0001, now);
       gain.gain.linearRampToValueAtTime(0.26, now + 0.06);
@@ -330,7 +385,7 @@ function playSound(type){
 
       o1.connect(og);
       o2.connect(og);
-      og.connect(audioCtx.destination);
+      og.connect(sfxMasterGain);
       og.gain.setValueAtTime(0.0001, now);
       og.gain.linearRampToValueAtTime(0.10, now + 0.06);
       og.gain.exponentialRampToValueAtTime(0.01, now + dur);
@@ -346,7 +401,7 @@ function playSound(type){
       const osc = audioCtx.createOscillator();
       const gain = audioCtx.createGain();
       osc.connect(gain);
-      gain.connect(audioCtx.destination);
+      gain.connect(sfxMasterGain);
       osc.type = 'sawtooth';
       osc.frequency.setValueAtTime(90, now);
       osc.frequency.exponentialRampToValueAtTime(35, now + 0.15);
@@ -374,7 +429,7 @@ function playSound(type){
       src.connect(bp);
       bp.connect(lp);
       lp.connect(gain);
-      gain.connect(audioCtx.destination);
+      gain.connect(sfxMasterGain);
 
       gain.gain.setValueAtTime(0.0001, now);
       gain.gain.linearRampToValueAtTime(0.22, now + 0.05);
@@ -396,7 +451,7 @@ function playSound(type){
       const gain = audioCtx.createGain();
       src.connect(lp);
       lp.connect(gain);
-      gain.connect(audioCtx.destination);
+      gain.connect(sfxMasterGain);
 
       gain.gain.setValueAtTime(0.0001, now);
       gain.gain.linearRampToValueAtTime(0.11, now + 0.04);
@@ -435,7 +490,7 @@ function playSound(type){
 
       o1.connect(gain);
       o2.connect(gain);
-      gain.connect(audioCtx.destination);
+      gain.connect(sfxMasterGain);
 
       gain.gain.setValueAtTime(0.0001, now);
       gain.gain.linearRampToValueAtTime(0.22, now + 0.08);
@@ -455,7 +510,7 @@ function playSound(type){
       const osc = audioCtx.createOscillator();
       const gain = audioCtx.createGain();
       osc.connect(gain);
-      gain.connect(audioCtx.destination);
+      gain.connect(sfxMasterGain);
       osc.type = 'triangle';
       osc.frequency.setValueAtTime(180, now);
       osc.frequency.exponentialRampToValueAtTime(60, now + 0.1);
@@ -473,7 +528,7 @@ function playSound(type){
       const osc = audioCtx.createOscillator();
       const gain = audioCtx.createGain();
       osc.connect(gain);
-      gain.connect(audioCtx.destination);
+      gain.connect(sfxMasterGain);
 
       osc.type = 'sine';
       osc.frequency.setValueAtTime(2400, now);
@@ -495,6 +550,42 @@ function playSound(type){
       lfo.start(now);
       osc.start(now);
       lfo.stop(now + dur);
+      osc.stop(now + dur);
+      break;
+    }
+    case 'slowdown': {
+      // v131: Bass note that gradually descends for 1 second (time slowing)
+      const dur = 1.0;
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(sfxMasterGain);
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(80, now);
+      osc.frequency.exponentialRampToValueAtTime(40, now + dur);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(0.18, now + 0.05);
+      gain.gain.setValueAtTime(0.16, now + (dur - 0.1));
+      gain.gain.exponentialRampToValueAtTime(0.01, now + dur);
+      osc.start(now);
+      osc.stop(now + dur);
+      break;
+    }
+    case 'speedup': {
+      // v131: Reverse - bass note that gradually ascends for 1 second (time returning to normal)
+      const dur = 1.0;
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(sfxMasterGain);
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(40, now);
+      osc.frequency.exponentialRampToValueAtTime(80, now + dur);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(0.18, now + 0.05);
+      gain.gain.setValueAtTime(0.16, now + (dur - 0.1));
+      gain.gain.exponentialRampToValueAtTime(0.01, now + dur);
+      osc.start(now);
       osc.stop(now + dur);
       break;
     }
@@ -1084,6 +1175,8 @@ const UI_SCREEN = {
   STATS_TEAM: 'stats_team',
   STATS_ROSTER: 'stats_roster',
   PAUSE_MENU: 'pause_menu',
+  SETTINGS_MENU: 'settings_menu',
+  AUDIO_MENU: 'audio_menu',
   FORMATION_MENU: 'formation_menu',
   GAME: 'game'
 };
@@ -1109,8 +1202,10 @@ const FORMATION_LABEL = {
 let slothsFormation = FORMATION.BALANCED;
 let dropbearsFormation = FORMATION.BALANCED;
 
-let pauseMenuIndex = 0;      // 0=RESUME, 1=CHANGE FORMATION
+let pauseMenuIndex = 0;      // 0=RESUME, 1=CHANGE TACTICS, 2=SETTINGS
 let formationMenuIndex = 0;  // cursor in formation menu (0..2)
+let settingsMenuIndex = 0;   // currently only 0=AUDIO
+let audioMenuIndex = 0;      // 0=MUSIC, 1=SFX
 
 function teamPoints(team){
   const t = score?.[team];
@@ -1251,7 +1346,7 @@ window.addEventListener('keydown', e => {
   // v113: menu navigation (blocks gameplay input until PLAY GAME)
   if (uiScreen !== UI_SCREEN.GAME){
     const code = e.code;
-    if (['ArrowUp','ArrowDown','Enter','Escape','Space'].includes(code)) e.preventDefault();
+    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Enter','Escape','Space'].includes(code)) e.preventDefault();
 
     if (uiScreen === UI_SCREEN.MAIN_MENU){
       if (code === 'ArrowUp' || code === 'ArrowDown'){
@@ -1272,8 +1367,11 @@ window.addEventListener('keydown', e => {
     }
 
     if (uiScreen === UI_SCREEN.PAUSE_MENU){
-      if (code === 'ArrowUp' || code === 'ArrowDown'){
-        pauseMenuIndex = (pauseMenuIndex === 0) ? 1 : 0;
+      if (code === 'ArrowUp'){
+        pauseMenuIndex = (pauseMenuIndex + 2) % 3;
+        playSound('chip');
+      } else if (code === 'ArrowDown'){
+        pauseMenuIndex = (pauseMenuIndex + 1) % 3;
         playSound('chip');
       } else if (code === 'Enter'){
         if (pauseMenuIndex === 0){
@@ -1282,10 +1380,15 @@ window.addEventListener('keydown', e => {
           isPaused = false;
           playSound('chip');
           resumeBGM();
-        } else {
+        } else if (pauseMenuIndex === 1) {
           // Change formation
           uiScreen = UI_SCREEN.FORMATION_MENU;
           formationMenuIndex = formationListIndex(slothsFormation);
+          playSound('chip');
+        } else {
+          // Settings
+          uiScreen = UI_SCREEN.SETTINGS_MENU;
+          settingsMenuIndex = 0;
           playSound('chip');
         }
       } else if (code === 'Escape'){
@@ -1294,6 +1397,41 @@ window.addEventListener('keydown', e => {
         isPaused = false;
         playSound('chip');
         resumeBGM();
+      }
+      return;
+    }
+
+    if (uiScreen === UI_SCREEN.SETTINGS_MENU){
+      if (code === 'ArrowUp' || code === 'ArrowDown'){
+        // Only one option for now, but keep the input consistent.
+        settingsMenuIndex = 0;
+        playSound('chip');
+      } else if (code === 'Enter'){
+        // Only option: AUDIO
+        uiScreen = UI_SCREEN.AUDIO_MENU;
+        audioMenuIndex = 0;
+        playSound('chip');
+      } else if (code === 'Escape'){
+        uiScreen = UI_SCREEN.PAUSE_MENU;
+        pauseMenuIndex = 2; // keep cursor on SETTINGS
+        playSound('chip');
+      }
+      return;
+    }
+
+    if (uiScreen === UI_SCREEN.AUDIO_MENU){
+      if (code === 'ArrowUp' || code === 'ArrowDown'){
+        audioMenuIndex = (audioMenuIndex === 0) ? 1 : 0;
+        playSound('chip');
+      } else if (code === 'ArrowLeft' || code === 'ArrowRight'){
+        const delta = (code === 'ArrowLeft') ? -10 : 10;
+        if (audioMenuIndex === 0) setMusicVolumePct(musicVolumePct + delta);
+        else setSfxVolumePct(sfxVolumePct + delta);
+        playSound('chip');
+      } else if (code === 'Escape'){
+        uiScreen = UI_SCREEN.SETTINGS_MENU;
+        settingsMenuIndex = 0;
+        playSound('chip');
       }
       return;
     }
@@ -1785,7 +1923,9 @@ function advanceBallDuringScorePause(){
       ball.flightTimeScale = 1;
     }
   } else {
-    ball.x += ball.vx; ball.y += ball.vy;
+    // v131: Apply time scale during goal kick (but meter stays at normal speed)
+    const timeMult = (gameState === 'goalkick') ? gameTimeScale : 1.0;
+    ball.x += ball.vx * timeMult; ball.y += ball.vy * timeMult;
 
     const onGround = (ball.height <= 0.01 && ball.flightFramesLeft <= 0);
     if (ball.kickType === 'punt' || onGround){
@@ -1829,6 +1969,8 @@ function startNextQuarter(){
   gameState = 'playing';
   playSound('quarterstart');
   showMessage(`QUARTER ${quarter}`);
+  // v130: Restart music at the start of each quarter
+  restartBGM();
 }
 
 function getControlledPlayer(){
@@ -2522,7 +2664,9 @@ function moveToward(p, tx, ty, spd){
   const d = Math.hypot(dx, dy);
   if (d < 1) return;
   const u = safeUnit(dx, dy);
-  const step = Math.min(spd * playerSpeedFactor(p), d);
+  // v131: Apply time scale during goal kick (but meter stays at normal speed)
+  const timeMult = (gameState === 'goalkick') ? gameTimeScale : 1.0;
+  const step = Math.min(spd * playerSpeedFactor(p) * timeMult, d);
   p.x += u.ux * step;
   p.y += u.uy * step;
   clampToOval(p);
@@ -3639,7 +3783,7 @@ function drawPauseMenuOverlay(){
   // v120: Scale overlay 2x to match doubled canvas resolution
   ctx.save();
   ctx.scale(2, 2);
-  drawInGameMenuOverlay('PAUSED', ['RESUME', 'CHANGE TACTICS'], pauseMenuIndex);
+  drawInGameMenuOverlay('PAUSED', ['RESUME', 'CHANGE TACTICS', 'SETTINGS'], pauseMenuIndex);
   ctx.restore();
 }
 
@@ -3653,6 +3797,104 @@ function drawFormationMenuOverlay(){
     FORMATION_LABEL[FORMATION.DEFENSIVE]
   ];
   drawInGameMenuOverlay('CHANGE TACTICS', opts, formationMenuIndex, formationListIndex(slothsFormation));
+  ctx.restore();
+}
+
+function drawSettingsMenuOverlay(){
+  // v129: Scale overlay 2x to match doubled canvas resolution
+  ctx.save();
+  ctx.scale(2, 2);
+  drawInGameMenuOverlay('SETTINGS', ['AUDIO'], settingsMenuIndex);
+  ctx.restore();
+}
+
+function drawAudioMenuOverlay(){
+  // v129: Scale overlay 2x to match doubled canvas resolution
+  ctx.save();
+  ctx.scale(2, 2);
+
+  // Backdrop + panel
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(0,0,800,600);
+
+  const w = 600;
+  const h = 310;
+  const x = (800 - w) / 2;
+  const y = (600 - h) / 2;
+  ctx.fillStyle = 'rgba(0,0,0,0.72)';
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = '#ffd700';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(x, y, w, h);
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.font = 'bold 22px Courier New';
+  ctx.fillStyle = '#ffd700';
+  ctx.fillText('AUDIO', 400, y + 18);
+
+  function drawSliderRow(label, pct, rowIndex){
+    const rowH = 86;
+    const ry = y + 74 + rowIndex * rowH;
+    const isSel = (audioMenuIndex === rowIndex);
+
+    // Row highlight
+    ctx.fillStyle = isSel ? 'rgba(255,215,0,0.16)' : 'rgba(255,255,255,0.06)';
+    ctx.fillRect(x + 18, ry, w - 36, rowH - 14);
+    ctx.strokeStyle = isSel ? '#ffd700' : 'rgba(255,255,255,0.25)';
+    ctx.lineWidth = isSel ? 3 : 2;
+    ctx.strokeRect(x + 18, ry, w - 36, rowH - 14);
+
+    // Label + value
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.font = 'bold 18px Courier New';
+    ctx.fillStyle = isSel ? '#ffd700' : '#fff';
+    ctx.fillText(label, x + 36, ry + 12);
+
+    ctx.textAlign = 'right';
+    ctx.fillStyle = 'rgba(255,255,255,0.92)';
+    ctx.fillText(`${pct}%`, x + w - 36, ry + 12);
+
+    // Slider bar
+    const barX = x + 170;
+    const barY = ry + 46;
+    const barW = w - 170 - 54;
+    const barH = 14;
+    ctx.fillStyle = 'rgba(255,255,255,0.10)';
+    ctx.fillRect(barX, barY, barW, barH);
+
+    // Ticks (10% increments)
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 10; i++){
+      const tx = barX + (barW * i / 10);
+      ctx.beginPath();
+      ctx.moveTo(tx, barY - 4);
+      ctx.lineTo(tx, barY + barH + 4);
+      ctx.stroke();
+    }
+
+    // Fill
+    const fillW = Math.round(barW * (pct / 100));
+    ctx.fillStyle = '#ffd700';
+    ctx.fillRect(barX, barY, fillW, barH);
+
+    // Knob
+    const knobX = barX + fillW;
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(knobX - 3, barY - 6, 6, barH + 12);
+  }
+
+  drawSliderRow('MUSIC', musicVolumePct, 0);
+  drawSliderRow('SFX', sfxVolumePct, 1);
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.font = 'bold 14px Courier New';
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.fillText('Use ↑/↓ to select   •   ←/→ to adjust (10%)   •   ESC to go back', 400, y + h - 34);
+
   ctx.restore();
 }
 
@@ -4039,15 +4281,18 @@ function moveControlledPlayer(){
   updateAimFromMovement(player);
 
   const speed = (player.hasBall ? PLAYER_SPEED_WITH_BALL : PLAYER_SPEED_NO_BALL) * playerSpeedFactor(player);
-  if (keys['ArrowLeft'])  player.x -= speed;
-  if (keys['ArrowRight']) player.x += speed;
-  if (keys['ArrowUp'])    player.y -= speed;
-  if (keys['ArrowDown'])  player.y += speed;
+  // v131: Apply time scale during goal kick (but meter stays at normal speed)
+  const timeMult = (gameState === 'goalkick') ? gameTimeScale : 1.0;
+  if (keys['ArrowLeft'])  player.x -= speed * timeMult;
+  if (keys['ArrowRight']) player.x += speed * timeMult;
+  if (keys['ArrowUp'])    player.y -= speed * timeMult;
+  if (keys['ArrowDown'])  player.y += speed * timeMult;
   clampToOval(player);
 }
 
 function attemptTackle(attacker, victim, isPlayerAction){
   if (!victim || !victim.hasBall) return false;
+  // v131: Prevent tackles on markCarrier during markstop (mark protection)
   if (gameState === 'markstop' && markCarrier && victim === markCarrier) return false;
   // Don't allow instant "chain tackles" the moment someone receives it.
   if (victim.possessFrames < POSSESSION_TACKLE_GRACE_FRAMES) return false;
@@ -4070,6 +4315,15 @@ function attemptTackle(attacker, victim, isPlayerAction){
     if (attacker.team === 'sloths') switchControlTo(attacker);
     showMessage('TACKLED!');
     playSound('tackle');
+    // v131: If tackle happens during goalkick, cancel the event and restore normal time
+    if (gameState === 'goalkick'){
+      gameState = 'playing';
+      goalKickShooter = null;
+      goalKickAuto = false;
+      timeScaleTarget = 1.0;
+      timeScaleRampFrames = TIME_SCALE_RAMP_FRAMES;
+      playSound('speedup');
+    }
     return true;
   }
 
@@ -4084,6 +4338,15 @@ function attemptTackle(attacker, victim, isPlayerAction){
     attacker.tackleCooldown = AI_TACKLE_COOLDOWN;
     showMessage('TACKLED!');
     playSound('tackle');
+    // v131: If tackle happens during goalkick, cancel the event and restore normal time
+    if (gameState === 'goalkick'){
+      gameState = 'playing';
+      goalKickShooter = null;
+      goalKickAuto = false;
+      timeScaleTarget = 1.0;
+      timeScaleRampFrames = TIME_SCALE_RAMP_FRAMES;
+      playSound('speedup');
+    }
     return true;
   }
   const aiEff = clamp01(getStat(attacker, 'TACKLE') / 100);
@@ -4094,6 +4357,15 @@ function attemptTackle(attacker, victim, isPlayerAction){
     attacker.tackleCooldown = AI_TACKLE_COOLDOWN;
     showMessage('TACKLED!');
     playSound('tackle');
+    // v131: If tackle happens during goalkick, cancel the event and restore normal time
+    if (gameState === 'goalkick'){
+      gameState = 'playing';
+      goalKickShooter = null;
+      goalKickAuto = false;
+      timeScaleTarget = 1.0;
+      timeScaleRampFrames = TIME_SCALE_RAMP_FRAMES;
+      playSound('speedup');
+    }
     return true;
   }
   attacker.tackleCooldown = 18;
@@ -4125,6 +4397,8 @@ function resolveCatch(possessor){
   }
 
   if (isMark){
+    // v131: If mark is taken during goalkick, cancel the goalkick and restore normal time
+    const wasInGoalkick = (gameState === 'goalkick');
     gameState = 'markstop';
     markStopFrames = MARK_PROTECT_FRAMES;
     markX = possessor.x;
@@ -4132,6 +4406,15 @@ function resolveCatch(possessor){
     markLockFrames = MARK_LOCK_FRAMES;
     showMessage('MARK!');
     playSound('mark');
+    
+    if (wasInGoalkick){
+      // Cancel goalkick event and restore normal time
+      goalKickShooter = null;
+      goalKickAuto = false;
+      timeScaleTarget = 1.0;
+      timeScaleRampFrames = TIME_SCALE_RAMP_FRAMES;
+      playSound('speedup');
+    }
 
     // v94: Dropbears AI doesn't always play on after marking.
     // If the mark is uncontested-ish, sometimes hold and take a set kick.
@@ -4425,9 +4708,21 @@ let goalKickAutoTarget = 0;
 // v29: ensure AI goal shots resolve quickly
 let goalKickAutoMaxFrames = 0;
 
+// ===================
+// GOAL KICK SLOW MOTION (v131)
+// ===================
+// Time scale: 1.0 = normal speed, 0.3 = 30% speed
+let gameTimeScale = 1.0;
+let timeScaleTarget = 1.0;
+let timeScaleRampFrames = 0;
+const TIME_SCALE_RAMP_FRAMES = 45; // 0.75 seconds at 60fps
+
 function enterGoalKick(shooter, auto=false){
   const p = shooter || getControlledPlayer();
   if (!p) return;
+  
+  // v131: Prevent re-entering if already in goalkick state (fixes sound loop and meter reset)
+  if (gameState === 'goalkick') return;
 
   gameState = 'goalkick';
   goalKickShooter = p;
@@ -4435,6 +4730,13 @@ function enterGoalKick(shooter, auto=false){
   // Give time for the meter to be seen.
   goalKickAutoDelay = auto ? 18 : 0;
   goalKickAutoMaxFrames = auto ? 60 : 0;
+  
+  // v131: Start slow motion ramp (100% -> 30% over 0.75 seconds)
+  // Ensure we start from current scale (should be 1.0 when entering goalkick)
+  if (gameTimeScale !== 1.0) gameTimeScale = 1.0;
+  timeScaleTarget = 0.3;
+  timeScaleRampFrames = TIME_SCALE_RAMP_FRAMES;
+  playSound('slowdown');
   // AI aims near the middle; longer distance = more variance.
   if (auto){
     const goalX = getGoalXForTeam(p.team);
@@ -4555,6 +4857,13 @@ function executeGoalKick(){
   gameState = 'goalkick_flight';
   goalKickShooter = null;
   goalKickAuto = false;
+  
+  // v131: Start speed up ramp (30% -> 100% over 0.75 seconds)
+  // Ensure we start from current scale (should be 0.3 when executing kick)
+  if (gameTimeScale !== 0.3) gameTimeScale = 0.3;
+  timeScaleTarget = 1.0;
+  timeScaleRampFrames = TIME_SCALE_RAMP_FRAMES;
+  playSound('speedup');
 }
 
 // ===================
@@ -4839,8 +5148,10 @@ function updateTeamAI(){
       if (d < stand){
         const u = safeUnit(p.x - carrier.x, p.y - carrier.y);
         if (!p.controlled){
-          p.x += u.ux * (AI_SPEED_ZONE * 1.25);
-          p.y += u.uy * (AI_SPEED_ZONE * 1.25);
+          // v131: Apply time scale during goal kick (but meter stays at normal speed)
+          const timeMult = (gameState === 'goalkick') ? gameTimeScale : 1.0;
+          p.x += u.ux * (AI_SPEED_ZONE * 1.25) * timeMult;
+          p.y += u.uy * (AI_SPEED_ZONE * 1.25) * timeMult;
           clampToOval(p);
         }
         continue;
@@ -4854,8 +5165,10 @@ function updateTeamAI(){
         if (d < MARK_STANDOFF_DIST){
           const u = safeUnit(p.x - markCarrier.x, p.y - markCarrier.y);
           if (!p.controlled){
-            p.x += u.ux * (AI_SPEED_ZONE * 1.2);
-            p.y += u.uy * (AI_SPEED_ZONE * 1.2);
+            // v131: Apply time scale during goal kick (but meter stays at normal speed)
+            const timeMult = (gameState === 'goalkick') ? gameTimeScale : 1.0;
+            p.x += u.ux * (AI_SPEED_ZONE * 1.2) * timeMult;
+            p.y += u.uy * (AI_SPEED_ZONE * 1.2) * timeMult;
             clampToOval(p);
           }
         } else if (d < (MARK_STANDOFF_DIST + 26)){
@@ -5079,7 +5392,23 @@ function updateTeamAI(){
 // ===================
 // UPDATE LOOP
 // ===================
+function updateTimeScale(){
+  // v131: Ramp time scale smoothly toward target
+  if (timeScaleRampFrames > 0){
+    const progress = 1 - (timeScaleRampFrames / TIME_SCALE_RAMP_FRAMES);
+    // Use current scale as starting point for smooth transitions
+    const startScale = gameTimeScale;
+    gameTimeScale = startScale + (timeScaleTarget - startScale) * progress;
+    timeScaleRampFrames--;
+  } else {
+    gameTimeScale = timeScaleTarget;
+  }
+}
+
 function update(){
+  // v131: Update time scale ramp
+  updateTimeScale();
+  
   // v113: no simulation while in menus
   if (uiScreen !== UI_SCREEN.GAME) return;
   // v101: hard pause (freeze all gameplay + timers)
@@ -5166,9 +5495,11 @@ function update(){
     }
   }
 
-  const simActive = (gameState === 'playing' || gameState === 'markstop' || gameState === 'goalkick_flight');
+  // v131: Include 'goalkick' in simActive so players can move at 30% speed during goal kick events
+  const simActive = (gameState === 'playing' || gameState === 'markstop' || gameState === 'goalkick' || gameState === 'goalkick_flight');
   if (simActive){
     updatePlaying();
+    // v131: Allow AI updates during goalkick so they can tackle/move at 30% speed
     if (gameState !== 'goalkick_flight'){
       autoSwitchControl();
       updateTeamAI();
@@ -5413,8 +5744,10 @@ function updatePlaying(){
 
     // Only walk it up when not under pressure.
     const spd = AI_SPEED_BASE * playerSpeedFactor(bearCarrier);
-    bearCarrier.x += run.ux * spd;
-    bearCarrier.y += run.uy * spd * 0.60;
+    // v131: Apply time scale during goal kick (but meter stays at normal speed)
+    const timeMult = (gameState === 'goalkick') ? gameTimeScale : 1.0;
+    bearCarrier.x += run.ux * spd * timeMult;
+    bearCarrier.y += run.uy * spd * 0.60 * timeMult;
     clampToOval(bearCarrier);
 
   // Dropbears goal shot uses the same golf meter + animated kick.
@@ -5535,7 +5868,9 @@ function updatePlaying(){
         ball.flightTimeScale = 1;
       }
     } else {
-      ball.x += ball.vx; ball.y += ball.vy;
+      // v131: Apply time scale during goal kick (but meter stays at normal speed)
+      const timeMult = (gameState === 'goalkick') ? gameTimeScale : 1.0;
+      ball.x += ball.vx * timeMult; ball.y += ball.vy * timeMult;
 
       // Friction for punts, and for any ball rolling on the deck after a flight ends.
       const onGround = (ball.height <= 0.01 && ball.flightFramesLeft <= 0);
@@ -5779,6 +6114,18 @@ function gameLoop(ts){
   if (uiScreen === UI_SCREEN.FORMATION_MENU){
     drawGameFrame();
     drawFormationMenuOverlay();
+    requestAnimationFrame(gameLoop);
+    return;
+  }
+  if (uiScreen === UI_SCREEN.SETTINGS_MENU){
+    drawGameFrame();
+    drawSettingsMenuOverlay();
+    requestAnimationFrame(gameLoop);
+    return;
+  }
+  if (uiScreen === UI_SCREEN.AUDIO_MENU){
+    drawGameFrame();
+    drawAudioMenuOverlay();
     requestAnimationFrame(gameLoop);
     return;
   }
