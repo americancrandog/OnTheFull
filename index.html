@@ -2590,6 +2590,41 @@ function handleBallOutOfBounds(prevX, prevY){
   if (isInsideOval(ball.x, ball.y)) return false;
   const b = boundaryPointAlongSegment(prevX, prevY, ball.x, ball.y);
 
+  // v151: If goalkick has planned result (goal/behind), don't treat side boundary crossing as "on the full".
+  // Clamp ball back and ensure flight path stays in bounds to prevent infinite loop.
+  if (ball.kickType === 'goalkick' && (ball.goalkickPlannedResult === 'goal' || ball.goalkickPlannedResult === 'behind')){
+    const atk = getAttackDir(ball.lastKickedBy);
+    const goalLineX = (atk === -1) ? LEFT_GOAL_X : RIGHT_GOAL_X;
+    
+    // Check if ball is crossing SIDE boundary (not goal line) - if so, clamp and adjust
+    const isCrossingSideBoundary = (atk === -1 && ball.x < goalLineX) || (atk === 1 && ball.x > goalLineX);
+    if (isCrossingSideBoundary){
+      // Clamp current position to boundary
+      ball.x = b.x;
+      ball.y = b.y;
+      
+      // Adjust flight target to keep path in bounds (target can be beyond goal line, but path must stay in)
+      if (ball.flightTotalFrames > 0 && ball.flightFramesLeft > 0){
+        // Clamp flight target X to be at goal line (not beyond, to avoid side boundary crossing)
+        ball.flightToX = goalLineX;
+        const targetRange = superYRangeAtX(ball.flightToX);
+        // Keep Y target within valid range at goal line
+        ball.flightToY = Math.max(targetRange.yMin + 5, Math.min(targetRange.yMax - 5, ball.flightToY));
+        // Update flight from position to current clamped position
+        ball.flightFromX = ball.x;
+        ball.flightFromY = ball.y;
+        // Recalculate velocity
+        const remainingFrames = ball.flightFramesLeft;
+        if (remainingFrames > 0){
+          ball.vx = (ball.flightToX - ball.x) / remainingFrames;
+          ball.vy = (ball.flightToY - ball.y) / remainingFrames;
+        }
+      }
+      return false; // Don't stop the flight, let it continue toward goal line
+    }
+    // If crossing goal line boundary, let normal goal line check handle it
+  }
+
   const kicker = ball.lastKickedBy;
   const outOnFull =
     (ball.kickType === 'pass' || ball.kickType === 'chip' || ball.kickType === 'punt' || ball.kickType === 'goalkick') &&
@@ -4929,7 +4964,18 @@ function executeGoalKick(){
   // v100: lock in the intended result so scoring always matches the meter.
   ball.goalkickPlannedResult = (acc < 35) ? 'goal' : (acc < 65) ? 'behind' : 'onfull';
 
+  let finalTargetX = targetX;
   if (ball.goalkickPlannedResult === 'goal'){
+    // v148: Clamp targetX to oval bounds to prevent "on the full" when kicking from near boundary.
+    // Goal line is at oval edge, so clamp to just inside goal line to ensure flight crosses it.
+    const goalLineX = (atk === -1) ? LEFT_GOAL_X : RIGHT_GOAL_X;
+    const ovalMinX = OVAL_CX - OVAL_A;
+    const ovalMaxX = OVAL_CX + OVAL_A;
+    // Clamp to oval, but ensure it's at least slightly beyond goal line so flight crosses it
+    finalTargetX = (atk === -1)
+      ? Math.max(goalLineX - 10, Math.min(ovalMinX + 5, targetX))
+      : Math.min(goalLineX + 10, Math.max(ovalMaxX - 5, targetX));
+    
     // Goal: keep inside goal posts
     yAim = clamp(yAim, GOAL_Y_TOP + 8, GOAL_Y_BOT - 8);
   } else if (ball.goalkickPlannedResult === 'behind'){
@@ -4952,13 +4998,13 @@ function executeGoalKick(){
   ball.kickStartY = ball.y;
   ball.intendedTarget = null;
 
-  const dist = Math.hypot(targetX - ball.x, yAim - ball.y);
+  const dist = Math.hypot(finalTargetX - ball.x, yAim - ball.y);
   // v29: AI goal shots should resolve fast (<= ~1s)
   const isAIShot = !player.controlled;
   const flight = isAIShot
     ? planFlightFrames(dist, 11.0, 18, 50)
     : planFlightFrames(dist, 5.2, 55, 95);
-  startTargetedFlight(targetX, yAim, flight, 120);
+  startTargetedFlight(finalTargetX, yAim, flight, 120);
 
   // Freeze the rest of play until the shot resolves.
   gameState = 'goalkick_flight';
