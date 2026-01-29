@@ -120,6 +120,8 @@ let bgmBuffer = null;
 let bgmSource = null;
 let bgmGain = null;
 let bgmFilter = null;
+let bgmStartTime = 0;   // when current source started (for pause/resume position)
+let bgmPauseOffset = undefined; // saved position when paused (seconds into buffer)
 
 // Base64 -> ArrayBuffer helper
 function base64ToArrayBuffer(base64) {
@@ -169,7 +171,10 @@ function startBGMSource(){
 
   bgmSource.playbackRate.value = 1.0;
   bgmSource.connect(bgmGain);
-  bgmSource.start(0);
+  const startOffset = typeof bgmPauseOffset === 'number' ? bgmPauseOffset : 0;
+  bgmSource.start(0, startOffset);
+  bgmStartTime = audioCtx.currentTime;
+  bgmPauseOffset = undefined;
 }
 
 async function startBGM(){
@@ -178,7 +183,11 @@ async function startBGM(){
 }
 
 function pauseBGM(){
-  if (bgmSource) {
+  if (bgmSource && bgmBuffer) {
+    // v152: Save position so resume continues where we left off
+    const elapsed = audioCtx.currentTime - bgmStartTime;
+    const loopLen = Math.max(0.1, bgmBuffer.duration - 0.5);
+    bgmPauseOffset = elapsed % loopLen;
     try { bgmSource.stop(); } catch(e) {}
     try { bgmSource.disconnect(); } catch(e) {}
     bgmSource = null;
@@ -199,6 +208,7 @@ function stopBGM(){
 function restartBGM(){
   // v130: Restart music from the beginning
   pauseBGM();
+  bgmPauseOffset = 0; // v152: ensure we start from start, not saved pause position
   if (bgmBuffer) {
     startBGMSource();
   } else {
@@ -2463,19 +2473,19 @@ function handleGoalLineCrossing(prevX, prevY){
     return true;
   }
 
-  if (y > GOAL_Y_TOP && y < GOAL_Y_BOT){
+  // v152: Clean goal vs behind for long kicks — use inclusive bounds, goal takes priority.
+  // Goal = through goal posts (middle); Behind = through behind posts but outside goal; else on full.
+  const inGoal = (y >= GOAL_Y_TOP && y <= GOAL_Y_BOT);
+  const inBehind = (y >= BEHIND_Y_TOP && y <= BEHIND_Y_BOT);
+  if (inGoal){
     score[kickTeam].g++;
-    // v122: Removed showMessage - result only shown in umpire animation
     showUmpireSignal('goal');
     beginScorePause('goal', defending, endSide, y);
-  }
-  else if (y > BEHIND_Y_TOP && y < BEHIND_Y_BOT){
+  } else if (inBehind){
     score[kickTeam].b++;
-    // v122: Removed showMessage - result only shown in umpire animation
     showUmpireSignal('behind');
     beginScorePause('behind', defending, endSide, y);
-  }
-  else {
+  } else {
     showMessage('OUT OF BOUNDS\nON THE FULL!');
     playSound('boo');
     beginScorePause('onfull', defending, endSide, y);
@@ -2587,6 +2597,8 @@ function awardOutOnTheFullKick(bx, by, kickerTeam){
 }
 
 function handleBallOutOfBounds(prevX, prevY){
+  // v152: During score pause the ball keeps traveling past the goals; don't trigger boundary.
+  if (scorePauseFrames > 0) return false;
   if (isInsideOval(ball.x, ball.y)) return false;
   const b = boundaryPointAlongSegment(prevX, prevY, ball.x, ball.y);
 
