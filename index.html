@@ -1268,12 +1268,12 @@ function isInside50ForTeam(x, team){
   return Math.abs(x - getGoalXForTeam(team)) <= FIFTY_METRE;
 }
 
-// v154: Best on ground — composite score: goals*6 + behinds + kicks*2 + handballs*2 + tackles*3 + inside50s*2
+// v154/v155: Best on ground — composite: goals*6 + behinds + kicks*2 + handballs*2 + tackles*3 + marks*2 (I50 removed)
 function getBestOnGround(){
   let best = null, bestScore = -1;
   for (const p of allPlayers){
     const gs = p.gameStats || {};
-    const score = (gs.goals || 0) * 6 + (gs.behinds || 0) + (gs.kicks || 0) * 2 + (gs.handballs || 0) * 2 + (gs.tackles || 0) * 3 + (gs.inside50s || 0) * 2;
+    const score = (gs.goals || 0) * 6 + (gs.behinds || 0) + (gs.kicks || 0) * 2 + (gs.handballs || 0) * 2 + (gs.tackles || 0) * 3 + (gs.marks || 0) * 2;
     if (score > bestScore){ bestScore = score; best = p; }
   }
   return best;
@@ -1403,7 +1403,7 @@ function startNewGameFromMenu(){
 
   resetPositionsStart();
   scoreWorm = [{ t: 0, diff: 0 }];
-  allPlayers.forEach(p => { if (p.gameStats) p.gameStats = { goals:0, behinds:0, kicks:0, handballs:0, tackles:0, inside50s:0 }; });
+  allPlayers.forEach(p => { if (p.gameStats) p.gameStats = { goals:0, behinds:0, kicks:0, handballs:0, tackles:0, marks:0 }; });
   uiScreen = UI_SCREEN.GAME;
   // Opening centre-bounce whistle (allowed because user pressed Enter on PLAY GAME).
   playSound('quarterstart');
@@ -1896,7 +1896,7 @@ function buildTeam(team, attackDir){
       name:`${team}-${i+1}`,
       number: i + 1,
       stats: null, // assigned in rebuildPlayers()
-      gameStats: { goals:0, behinds:0, kicks:0, handballs:0, tackles:0, inside50s:0 }, // v154: match stats
+      gameStats: { goals:0, behinds:0, kicks:0, handballs:0, tackles:0, marks:0 }, // v154/v155: match stats (I50 removed, marks added)
 
       // Aim defaults
       aimX: attackDir,
@@ -4166,16 +4166,20 @@ function drawStatsOverlayContent(showBestOnGround){
   const roster = getRosterForTeam(team);
   const rowH = 22;
   const tableY = 235;
+  // Order: K, H, D, M, T, G, B — Goals (G) bold
+  const colK = 188, colH = 214, colD = 240, colM = 266, colT = 292, colG = 318, colB = 344;
   ctx.font = 'bold 12px Courier New';
   ctx.fillStyle = 'rgba(255,215,0,0.9)';
   ctx.fillText('NAME', 50, tableY);
-  ctx.fillText('G', 190, tableY);
-  ctx.fillText('B', 218, tableY);
-  ctx.fillText('K', 254, tableY);
-  ctx.fillText('H', 290, tableY);
-  ctx.fillText('D', 326, tableY);
-  ctx.fillText('T', 354, tableY);
-  ctx.fillText('I50', 390, tableY);
+  ctx.fillText('K', colK, tableY);
+  ctx.fillText('H', colH, tableY);
+  ctx.fillText('D', colD, tableY);
+  ctx.fillText('M', colM, tableY);
+  ctx.fillText('T', colT, tableY);
+  ctx.font = 'bold 12px Courier New';
+  ctx.fillText('G', colG, tableY);
+  ctx.font = 'bold 12px Courier New';
+  ctx.fillText('B', colB, tableY);
 
   ctx.font = '12px Courier New';
   ctx.fillStyle = '#fff';
@@ -4185,13 +4189,15 @@ function drawStatsOverlayContent(showBestOnGround){
     const d = (gs.kicks || 0) + (gs.handballs || 0);
     const y = tableY + 4 + (i + 1) * rowH;
     ctx.fillText((p.name || '').slice(0, 18), 50, y);
-    ctx.fillText(String(gs.goals || 0), 192, y);
-    ctx.fillText(String(gs.behinds || 0), 220, y);
-    ctx.fillText(String(gs.kicks || 0), 256, y);
-    ctx.fillText(String(gs.handballs || 0), 292, y);
-    ctx.fillText(String(d), 328, y);
-    ctx.fillText(String(gs.tackles || 0), 356, y);
-    ctx.fillText(String(gs.inside50s || 0), 392, y);
+    ctx.fillText(String(gs.kicks || 0), colK, y);
+    ctx.fillText(String(gs.handballs || 0), colH, y);
+    ctx.fillText(String(d), colD, y);
+    ctx.fillText(String(gs.marks || 0), colM, y);
+    ctx.fillText(String(gs.tackles || 0), colT, y);
+    ctx.font = 'bold 12px Courier New';
+    ctx.fillText(String(gs.goals || 0), colG, y);
+    ctx.font = '12px Courier New';
+    ctx.fillText(String(gs.behinds || 0), colB, y);
   }
 
   if (showBestOnGround){
@@ -4223,7 +4229,16 @@ function drawStatsOverlayContent(showBestOnGround){
       ctx.fillText((bog.name || '').slice(0, 16), cardX + 68, cardY + 44);
       ctx.font = '11px Courier New';
       ctx.fillStyle = 'rgba(255,255,255,0.9)';
-      ctx.fillText(`${gs.goals||0}G ${gs.behinds||0}B  ${d}D  ${gs.tackles||0}T  ${gs.inside50s||0}I50`, cardX + 68, cardY + 62);
+      const part1 = `${gs.kicks||0}K ${gs.handballs||0}H ${d}D ${gs.marks||0}M ${gs.tackles||0}T  `;
+      const part2 = `${gs.goals||0}G`;
+      const part3 = ` ${gs.behinds||0}B`;
+      ctx.fillText(part1, cardX + 68, cardY + 62);
+      const w1 = ctx.measureText(part1).width;
+      ctx.font = 'bold 11px Courier New';
+      ctx.fillText(part2, cardX + 68 + w1, cardY + 62);
+      const w2 = ctx.measureText(part2).width;
+      ctx.font = '11px Courier New';
+      ctx.fillText(part3, cardX + 68 + w1 + w2, cardY + 62);
     }
   }
 }
@@ -4848,10 +4863,8 @@ function resolveCatch(possessor){
   const isKick = (ball.kickType === 'pass' || ball.kickType === 'chip' || ball.kickType === 'punt');
   const isMark = isKick && kickDist >= MARK_MIN_KICK_DIST;
 
-  // v154: Inside 50 — kick landed in attacking 50 for the kicking team
-  if (ball.lastKickedByPlayer && ball.lastKickedByPlayer.gameStats && (ball.kickType === 'pass' || ball.kickType === 'chip' || ball.kickType === 'punt' || ball.kickType === 'goalkick')){
-    if (isInside50ForTeam(ball.x, ball.lastKickedBy)) ball.lastKickedByPlayer.gameStats.inside50s++;
-  }
+  // v155: Marks — player taking the mark gets +1
+  if (isMark && possessor.gameStats) possessor.gameStats.marks++;
 
   giveBallTo(possessor);
   possessor.noPickupFrames = NO_RECLAIM_FRAMES;
