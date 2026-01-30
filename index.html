@@ -1216,6 +1216,7 @@ const UI_SCREEN = {
   STATS_TEAM: 'stats_team',
   STATS_ROSTER: 'stats_roster',
   PAUSE_MENU: 'pause_menu',
+  STATS_IN_GAME: 'stats_in_game', // v154: in-game stats (worm + team list)
   SETTINGS_MENU: 'settings_menu',
   AUDIO_MENU: 'audio_menu',
   FORMATION_MENU: 'formation_menu',
@@ -1243,7 +1244,10 @@ const FORMATION_LABEL = {
 let slothsFormation = FORMATION.BALANCED;
 let dropbearsFormation = FORMATION.BALANCED;
 
-let pauseMenuIndex = 0;      // 0=RESUME, 1=CHANGE TACTICS, 2=SETTINGS
+let pauseMenuIndex = 0;      // 0=RESUME, 1=CHANGE TACTICS, 2=STATS, 3=SETTINGS
+let statsMenuTeamIndex = 0;   // v154: 0=Sloths, 1=Dropbears (in STATS_IN_GAME)
+let fulltimeSubScreen = 'choice'; // v154: 'choice' | 'stats' | 'replay'
+let fulltimeMenuIndex = 0;   // v154: 0=STATS, 1=REPLAY, 2=MAIN MENU
 let formationMenuIndex = 0;  // cursor in formation menu (0..2)
 let settingsMenuIndex = 0;   // currently only 0=AUDIO
 let audioMenuIndex = 0;      // 0=MUSIC, 1=SFX
@@ -1252,6 +1256,27 @@ function teamPoints(team){
   const t = score?.[team];
   if (!t) return 0;
   return (t.g * 6) + t.b;
+}
+
+// v154: Elapsed game time in seconds (for score worm)
+function getElapsedGameTimeSecs(){
+  return (quarter - 1) * QUARTER_LENGTH_GAME_SECS + (QUARTER_LENGTH_GAME_SECS - Math.max(0, quarterTime));
+}
+
+// v154: Is position inside attacking 50 for team?
+function isInside50ForTeam(x, team){
+  return Math.abs(x - getGoalXForTeam(team)) <= FIFTY_METRE;
+}
+
+// v154: Best on ground — composite score: goals*6 + behinds + kicks*2 + handballs*2 + tackles*3 + inside50s*2
+function getBestOnGround(){
+  let best = null, bestScore = -1;
+  for (const p of allPlayers){
+    const gs = p.gameStats || {};
+    const score = (gs.goals || 0) * 6 + (gs.behinds || 0) + (gs.kicks || 0) * 2 + (gs.handballs || 0) * 2 + (gs.tackles || 0) * 3 + (gs.inside50s || 0) * 2;
+    if (score > bestScore){ bestScore = score; best = p; }
+  }
+  return best;
 }
 
 function computeDropbearsAutoFormation(){
@@ -1377,6 +1402,8 @@ function startNewGameFromMenu(){
   messageTimer = 0;
 
   resetPositionsStart();
+  scoreWorm = [{ t: 0, diff: 0 }];
+  allPlayers.forEach(p => { if (p.gameStats) p.gameStats = { goals:0, behinds:0, kicks:0, handballs:0, tackles:0, inside50s:0 }; });
   uiScreen = UI_SCREEN.GAME;
   // Opening centre-bounce whistle (allowed because user pressed Enter on PLAY GAME).
   playSound('quarterstart');
@@ -1384,6 +1411,38 @@ function startNewGameFromMenu(){
 }
 
 window.addEventListener('keydown', e => {
+  // v154: Fulltime aftermath — STATS / REPLAY / MAIN MENU
+  if (uiScreen === UI_SCREEN.GAME && gameState === 'fulltime'){
+    const code = e.code;
+    if (['ArrowLeft','ArrowRight','Enter','Escape'].includes(code)) e.preventDefault();
+    if (fulltimeSubScreen === 'choice'){
+      if (code === 'ArrowLeft'){
+        fulltimeMenuIndex = Math.max(0, fulltimeMenuIndex - 1);
+        playSound('chip');
+      } else if (code === 'ArrowRight'){
+        fulltimeMenuIndex = Math.min(2, fulltimeMenuIndex + 1);
+        playSound('chip');
+      } else if (code === 'Enter'){
+        if (fulltimeMenuIndex === 0){ fulltimeSubScreen = 'stats'; statsMenuTeamIndex = 0; playSound('chip'); }
+        else if (fulltimeMenuIndex === 1){ fulltimeSubScreen = 'replay'; playSound('chip'); }
+        else { uiScreen = UI_SCREEN.MAIN_MENU; menuIndex = 0; playSound('chip'); }
+      } else if (code === 'Escape'){
+        uiScreen = UI_SCREEN.MAIN_MENU;
+        menuIndex = 0;
+        playSound('chip');
+      }
+    } else {
+      if (code === 'Escape'){
+        fulltimeSubScreen = 'choice';
+        playSound('chip');
+      } else if (fulltimeSubScreen === 'stats' && (code === 'ArrowLeft' || code === 'ArrowRight')){
+        statsMenuTeamIndex = (code === 'ArrowLeft') ? 0 : 1;
+        playSound('chip');
+      }
+    }
+    return;
+  }
+
   // v113: menu navigation (blocks gameplay input until PLAY GAME)
   if (uiScreen !== UI_SCREEN.GAME){
     const code = e.code;
@@ -1409,35 +1468,50 @@ window.addEventListener('keydown', e => {
 
     if (uiScreen === UI_SCREEN.PAUSE_MENU){
       if (code === 'ArrowUp'){
-        pauseMenuIndex = (pauseMenuIndex + 2) % 3;
+        pauseMenuIndex = (pauseMenuIndex + 3) % 4;
         playSound('chip');
       } else if (code === 'ArrowDown'){
-        pauseMenuIndex = (pauseMenuIndex + 1) % 3;
+        pauseMenuIndex = (pauseMenuIndex + 1) % 4;
         playSound('chip');
       } else if (code === 'Enter'){
         if (pauseMenuIndex === 0){
-          // Resume
           uiScreen = UI_SCREEN.GAME;
           isPaused = false;
           playSound('chip');
           resumeBGM();
         } else if (pauseMenuIndex === 1) {
-          // Change formation
           uiScreen = UI_SCREEN.FORMATION_MENU;
           formationMenuIndex = formationListIndex(slothsFormation);
           playSound('chip');
+        } else if (pauseMenuIndex === 2) {
+          uiScreen = UI_SCREEN.STATS_IN_GAME;
+          statsMenuTeamIndex = 0;
+          playSound('chip');
         } else {
-          // Settings
           uiScreen = UI_SCREEN.SETTINGS_MENU;
           settingsMenuIndex = 0;
           playSound('chip');
         }
       } else if (code === 'Escape'){
-        // ESC behaves like resume from pause menu
         uiScreen = UI_SCREEN.GAME;
         isPaused = false;
         playSound('chip');
         resumeBGM();
+      }
+      return;
+    }
+
+    if (uiScreen === UI_SCREEN.STATS_IN_GAME){
+      if (code === 'ArrowLeft'){
+        statsMenuTeamIndex = 0;
+        playSound('chip');
+      } else if (code === 'ArrowRight'){
+        statsMenuTeamIndex = 1;
+        playSound('chip');
+      } else if (code === 'Escape'){
+        uiScreen = UI_SCREEN.PAUSE_MENU;
+        pauseMenuIndex = 2;
+        playSound('chip');
       }
       return;
     }
@@ -1454,7 +1528,7 @@ window.addEventListener('keydown', e => {
         playSound('chip');
       } else if (code === 'Escape'){
         uiScreen = UI_SCREEN.PAUSE_MENU;
-        pauseMenuIndex = 2; // keep cursor on SETTINGS
+        pauseMenuIndex = 3; // keep cursor on SETTINGS
         playSound('chip');
       }
       return;
@@ -1605,6 +1679,7 @@ const ball = {
   prevHeight: 0,
   free: false,
   lastKickedBy: null,
+  lastKickedByPlayer: null, // v154: for stats (goals, behinds, inside 50)
   kickType: null, // 'chip' | 'pass' | 'punt' | 'handball'
 
   // Guided flight for chip + pass: we treat these as "targeted"
@@ -1821,6 +1896,7 @@ function buildTeam(team, attackDir){
       name:`${team}-${i+1}`,
       number: i + 1,
       stats: null, // assigned in rebuildPlayers()
+      gameStats: { goals:0, behinds:0, kicks:0, handballs:0, tackles:0, inside50s:0 }, // v154: match stats
 
       // Aim defaults
       aimX: attackDir,
@@ -1872,6 +1948,8 @@ function rebuildPlayers(){
 
 // Score
 const score = { sloths:{g:0,b:0}, dropbears:{g:0,b:0} };
+// v154: Score worm — [{ t: gameTimeSecs, diff: slothsPoints - dropbearsPoints }], home positive
+let scoreWorm = [{ t: 0, diff: 0 }];
 
 // Quarter
 let quarter = 1;
@@ -1990,6 +2068,8 @@ function endQuarterNow(){
   quarterTime = 0;
   if (quarter >= 4){
     gameState = 'fulltime';
+    fulltimeSubScreen = 'choice';
+    fulltimeMenuIndex = 0;
     showMessage('FULL TIME!');
     playSound('whistle');
     stopBGM();
@@ -2193,6 +2273,7 @@ function sanitizeBall(){
     ball.prevHeight = 0;
     ball.free = true;
     ball.lastKickedBy = null;
+    ball.lastKickedByPlayer = null;
     ball.kickType = null;
     ball.flightFramesLeft = 0;
     ball.flightTotalFrames = 0;
@@ -2456,12 +2537,14 @@ function handleGoalLineCrossing(prevX, prevY){
     ball.goalkickPlannedResult = null;
     if (res === 'goal'){
       score[kickTeam].g++;
-      // v122: Removed showMessage - result only shown in umpire animation
+      if (ball.lastKickedByPlayer && ball.lastKickedByPlayer.gameStats) ball.lastKickedByPlayer.gameStats.goals++;
+      scoreWorm.push({ t: getElapsedGameTimeSecs(), diff: teamPoints('sloths') - teamPoints('dropbears') });
       showUmpireSignal('goal');
       beginScorePause('goal', defending, endSide, y);
     } else if (res === 'behind'){
       score[kickTeam].b++;
-      // v122: Removed showMessage - result only shown in umpire animation
+      if (ball.lastKickedByPlayer && ball.lastKickedByPlayer.gameStats) ball.lastKickedByPlayer.gameStats.behinds++;
+      scoreWorm.push({ t: getElapsedGameTimeSecs(), diff: teamPoints('sloths') - teamPoints('dropbears') });
       showUmpireSignal('behind');
       beginScorePause('behind', defending, endSide, y);
     } else {
@@ -2479,10 +2562,14 @@ function handleGoalLineCrossing(prevX, prevY){
   const inBehind = (y >= BEHIND_Y_TOP && y <= BEHIND_Y_BOT);
   if (inGoal){
     score[kickTeam].g++;
+    if (ball.lastKickedByPlayer && ball.lastKickedByPlayer.gameStats) ball.lastKickedByPlayer.gameStats.goals++;
+    scoreWorm.push({ t: getElapsedGameTimeSecs(), diff: teamPoints('sloths') - teamPoints('dropbears') });
     showUmpireSignal('goal');
     beginScorePause('goal', defending, endSide, y);
   } else if (inBehind){
     score[kickTeam].b++;
+    if (ball.lastKickedByPlayer && ball.lastKickedByPlayer.gameStats) ball.lastKickedByPlayer.gameStats.behinds++;
+    scoreWorm.push({ t: getElapsedGameTimeSecs(), diff: teamPoints('sloths') - teamPoints('dropbears') });
     showUmpireSignal('behind');
     beginScorePause('behind', defending, endSide, y);
   } else {
@@ -2500,7 +2587,8 @@ function doBoundaryThrowIn(bx, by){
   ball.free = true;
   ball.kickType = 'throwin';
   ball.lastKickedBy = null;
-  
+  ball.lastKickedByPlayer = null;
+
   // Start ball at boundary point
   ball.x = bx;
   ball.y = by;
@@ -2603,13 +2691,12 @@ function handleBallOutOfBounds(prevX, prevY){
   const b = boundaryPointAlongSegment(prevX, prevY, ball.x, ball.y);
 
   // v151: If goalkick has planned result (goal/behind), don't treat side boundary crossing as "on the full".
-  // Clamp ball back and ensure flight path stays in bounds to prevent infinite loop.
+  // v153: Only treat as "side boundary" when boundary point is on the curved (top/bottom) part of the oval,
+  // not when it's at the goal line — so we don't clamp the flight when the ball has gone past the goal.
   if (ball.kickType === 'goalkick' && (ball.goalkickPlannedResult === 'goal' || ball.goalkickPlannedResult === 'behind')){
     const atk = getAttackDir(ball.lastKickedBy);
     const goalLineX = (atk === -1) ? LEFT_GOAL_X : RIGHT_GOAL_X;
-    
-    // Check if ball is crossing SIDE boundary (not goal line) - if so, clamp and adjust
-    const isCrossingSideBoundary = (atk === -1 && ball.x < goalLineX) || (atk === 1 && ball.x > goalLineX);
+    const isCrossingSideBoundary = (b.x > LEFT_GOAL_X + 15 && b.x < RIGHT_GOAL_X - 15);
     if (isCrossingSideBoundary){
       // Clamp current position to boundary
       ball.x = b.x;
@@ -3229,6 +3316,115 @@ function drawUI(){
     ctx.fillStyle = '#ffd700';
     ctx.font = 'bold 26px Courier New';
     ctx.fillText(winner, 400, 350);
+
+    // v154: Aftermath choice — STATS | REPLAY | MAIN MENU
+    if (fulltimeSubScreen === 'choice'){
+      const opts = ['STATS', 'REPLAY', 'MAIN MENU'];
+      const rowH = 44;
+      const baseY = 400;
+      ctx.font = 'bold 18px Courier New';
+      for (let i = 0; i < opts.length; i++){
+        const ry = baseY + i * rowH;
+        const isSel = (fulltimeMenuIndex === i);
+        ctx.fillStyle = isSel ? 'rgba(255,215,0,0.25)' : 'rgba(255,255,255,0.08)';
+        ctx.fillRect(280, ry - 8, 240, rowH - 4);
+        ctx.strokeStyle = isSel ? '#ffd700' : 'rgba(255,255,255,0.3)';
+        ctx.lineWidth = isSel ? 3 : 2;
+        ctx.strokeRect(280, ry - 8, 240, rowH - 4);
+        ctx.fillStyle = isSel ? '#ffd700' : '#fff';
+        ctx.fillText(opts[i], 400, ry + 12);
+      }
+      ctx.font = 'bold 12px Courier New';
+      ctx.fillStyle = 'rgba(255,255,255,0.7)';
+      ctx.fillText('← / → select   ENTER choose   ESC main menu', 400, 555);
+    } else if (fulltimeSubScreen === 'stats'){
+      ctx.fillStyle = 'rgba(0,0,0,0.78)';
+      ctx.fillRect(0,0,800,600);
+      drawStatsOverlayContent(true);
+      ctx.font = 'bold 12px Courier New';
+      ctx.fillStyle = 'rgba(255,255,255,0.8)';
+      ctx.textAlign = 'center';
+      ctx.fillText('ESC back', 400, 578);
+    } else if (fulltimeSubScreen === 'replay'){
+      ctx.fillStyle = 'rgba(0,0,0,0.78)';
+      ctx.fillRect(0,0,800,600);
+      ctx.fillStyle = '#ffd700';
+      ctx.font = 'bold 22px Courier New';
+      ctx.textAlign = 'center';
+      ctx.fillText('SCORE WORM — REPLAY', 400, 28);
+      const wormL = 50, wormR = 750, wormT = 50, wormB = 280;
+      const wormW = wormR - wormL, wormH = wormB - wormT;
+      const totalGameSecsReplay = 4 * QUARTER_LENGTH_GAME_SECS;
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillRect(wormL, wormT, wormW, wormH);
+      ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(wormL, wormT, wormW, wormH);
+      for (let q = 1; q <= 3; q++){
+        const tx = wormL + (q * QUARTER_LENGTH_GAME_SECS / totalGameSecsReplay) * wormW;
+        ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+        ctx.setLineDash([2, 4]);
+        ctx.beginPath();
+        ctx.moveTo(tx, wormT);
+        ctx.lineTo(tx, wormB);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+      const currentTReplay = getElapsedGameTimeSecs();
+      const currentDiffReplay = teamPoints('sloths') - teamPoints('dropbears');
+      const yAxisMaxReplay = 100;
+      const yScaleReplay = (wormH / 2) / yAxisMaxReplay;
+      const yMidReplay = wormT + wormH / 2;
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(wormL, yMidReplay);
+      ctx.lineTo(wormR, yMidReplay);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const wormPointsReplay = [];
+      wormPointsReplay.push({ t: 0, diff: 0 });
+      for (let i = 0; i < scoreWorm.length; i++){
+        const prevDiff = i > 0 ? scoreWorm[i - 1].diff : 0;
+        wormPointsReplay.push({ t: scoreWorm[i].t, diff: prevDiff });
+        wormPointsReplay.push({ t: scoreWorm[i].t, diff: scoreWorm[i].diff });
+      }
+      const lastScoreTReplay = scoreWorm.length > 0 ? scoreWorm[scoreWorm.length - 1].t : 0;
+      const lastScoreDiffReplay = scoreWorm.length > 0 ? scoreWorm[scoreWorm.length - 1].diff : 0;
+      if (currentTReplay > lastScoreTReplay){
+        wormPointsReplay.push({ t: currentTReplay, diff: lastScoreDiffReplay });
+      }
+      wormPointsReplay.push({ t: currentTReplay, diff: currentDiffReplay });
+      if (wormPointsReplay.length >= 2){
+        ctx.strokeStyle = '#ffd700';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        for (let i = 0; i < wormPointsReplay.length; i++){
+          const x = wormL + (wormPointsReplay[i].t / totalGameSecsReplay) * wormW;
+          const y = yMidReplay - wormPointsReplay[i].diff * yScaleReplay;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+      ctx.font = '10px Courier New';
+      ctx.fillStyle = 'rgba(255,255,255,0.6)';
+      ctx.textBaseline = 'top';
+      for (let q = 1; q <= 4; q++){
+        const tx = wormL + ((q - 1) * QUARTER_LENGTH_GAME_SECS / totalGameSecsReplay) * wormW;
+        ctx.textAlign = q === 1 ? 'left' : (q === 4 ? 'right' : 'center');
+        ctx.fillText('Q' + q, tx + (q === 1 ? 2 : (q === 4 ? -2 : 0)), wormB + 4);
+      }
+      ctx.textAlign = 'center';
+      const sT2 = score.sloths.g*6 + score.sloths.b;
+      const dT2 = score.dropbears.g*6 + score.dropbears.b;
+      ctx.font = 'bold 24px Courier New';
+      ctx.fillStyle = '#fff';
+      ctx.fillText(`FINAL: ${score.sloths.g}.${score.sloths.b} (${sT2})  -  ${score.dropbears.g}.${score.dropbears.b} (${dT2})`, 400, 320);
+      ctx.font = 'bold 12px Courier New';
+      ctx.fillStyle = 'rgba(255,255,255,0.8)';
+      ctx.fillText('ESC back', 400, 578);
+    }
   }
 
   const p = getControlledPlayer();
@@ -3815,12 +4011,14 @@ function drawMenuScreens(){
 function drawInGameMenuOverlay(title, options, selectedIndex, selectedBorderIndex=null){
   // Draws a translucent overlay with menu options; optional border on the "current" selection.
   // Note: This function is called with context already scaled 2x, so use 800x600 coordinates
+  // v155: Box height grows with option count so "Use..." instructions sit below the last option
   ctx.save();
   ctx.fillStyle = 'rgba(0,0,0,0.55)';
   ctx.fillRect(0,0,800,600);
 
   const w = 520;
-  const h = 260;
+  const rowH = 54;
+  const h = Math.max(260, 66 + options.length * rowH + 56); // space for title, rows, and instructions below
   const x = (800 - w) / 2;
   const y = (600 - h) / 2;
   ctx.fillStyle = 'rgba(0,0,0,0.72)';
@@ -3835,7 +4033,6 @@ function drawInGameMenuOverlay(title, options, selectedIndex, selectedBorderInde
   ctx.fillStyle = '#ffd700';
   ctx.fillText(title, 400, y + 18);
 
-  const rowH = 54;
   const baseY = y + 66;
   for (let i = 0; i < options.length; i++){
     const ry = baseY + i * rowH;
@@ -3869,7 +4066,178 @@ function drawPauseMenuOverlay(){
   // v120: Scale overlay 2x to match doubled canvas resolution
   ctx.save();
   ctx.scale(2, 2);
-  drawInGameMenuOverlay('PAUSED', ['RESUME', 'CHANGE TACTICS', 'SETTINGS'], pauseMenuIndex);
+  drawInGameMenuOverlay('PAUSED', ['RESUME', 'CHANGE TACTICS', 'STATS', 'SETTINGS'], pauseMenuIndex);
+  ctx.restore();
+}
+
+// v154/v155: Stats overlay content (worm + team table); optional Best on Ground card. Call in 800x600 space.
+// v155: Score worm = full game (4 quarters), x = time, y = margin; worm extends to current time; quarter lines.
+function drawStatsOverlayContent(showBestOnGround){
+  const wormL = 50, wormR = 750, wormT = 70, wormB = 190;
+  const wormW = wormR - wormL, wormH = wormB - wormT;
+  const totalGameSecs = 4 * QUARTER_LENGTH_GAME_SECS;
+
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 18px Courier New';
+  ctx.fillStyle = '#ffd700';
+  ctx.fillText('SCORE WORM  (← / → switch team)', 400, 32);
+
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillRect(wormL, wormT, wormW, wormH);
+  ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(wormL, wormT, wormW, wormH);
+
+  // Quarter boundaries (vertical lines): Q1|Q2|Q3|Q4
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([2, 4]);
+  for (let q = 1; q <= 3; q++){
+    const tx = wormL + (q * QUARTER_LENGTH_GAME_SECS / totalGameSecs) * wormW;
+    ctx.beginPath();
+    ctx.moveTo(tx, wormT);
+    ctx.lineTo(tx, wormB);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  const currentT = getElapsedGameTimeSecs();
+  const currentDiff = teamPoints('sloths') - teamPoints('dropbears');
+  // Y-axis fixed ±100 points so a goal (+6) is a small jump
+  const yAxisMax = 100;
+  const yScale = (wormH / 2) / yAxisMax;
+  const yMid = wormT + wormH / 2;
+
+  // Zero line (horizontal)
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(wormL, yMid);
+  ctx.lineTo(wormR, yMid);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Worm: step chart — horizontal then vertical at each score; full game on x; extends to current time
+  // (0,0) -> (t1,0) -> (t1,d1) -> (t2,d1) -> (t2,d2) -> ... -> (currentT, lastDiff) -> (currentT, currentDiff)
+  const wormPoints = [];
+  wormPoints.push({ t: 0, diff: 0 });
+  for (let i = 0; i < scoreWorm.length; i++){
+    const prevDiff = i > 0 ? scoreWorm[i - 1].diff : 0;
+    wormPoints.push({ t: scoreWorm[i].t, diff: prevDiff });
+    wormPoints.push({ t: scoreWorm[i].t, diff: scoreWorm[i].diff });
+  }
+  const lastScoreT = scoreWorm.length > 0 ? scoreWorm[scoreWorm.length - 1].t : 0;
+  const lastScoreDiff = scoreWorm.length > 0 ? scoreWorm[scoreWorm.length - 1].diff : 0;
+  if (currentT > lastScoreT){
+    wormPoints.push({ t: currentT, diff: lastScoreDiff });
+  }
+  wormPoints.push({ t: currentT, diff: currentDiff });
+
+  if (wormPoints.length >= 2){
+    ctx.strokeStyle = '#ffd700';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < wormPoints.length; i++){
+      const x = wormL + (wormPoints[i].t / totalGameSecs) * wormW;
+      const y = yMid - wormPoints[i].diff * yScale;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+
+  // Quarter labels below worm: Q1, Q2, Q3, Q4 at start of each quarter
+  ctx.font = '10px Courier New';
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  ctx.textBaseline = 'top';
+  for (let q = 1; q <= 4; q++){
+    const tx = wormL + ((q - 1) * QUARTER_LENGTH_GAME_SECS / totalGameSecs) * wormW;
+    ctx.textAlign = q === 1 ? 'left' : (q === 4 ? 'right' : 'center');
+    ctx.fillText('Q' + q, tx + (q === 1 ? 2 : (q === 4 ? -2 : 0)), wormB + 4);
+  }
+  ctx.textAlign = 'center';
+
+  const team = TEAM_BY_MENU_INDEX[statsMenuTeamIndex];
+  ctx.fillStyle = TEAM_COLORS_PORTRAIT[team]?.main || '#fff';
+  ctx.font = 'bold 20px Courier New';
+  ctx.textAlign = 'left';
+  ctx.fillText(TEAM_DISPLAY[team] + '  ← / →', 50, 215);
+
+  const roster = getRosterForTeam(team);
+  const rowH = 22;
+  const tableY = 235;
+  ctx.font = 'bold 12px Courier New';
+  ctx.fillStyle = 'rgba(255,215,0,0.9)';
+  ctx.fillText('NAME', 50, tableY);
+  ctx.fillText('G', 190, tableY);
+  ctx.fillText('B', 218, tableY);
+  ctx.fillText('K', 254, tableY);
+  ctx.fillText('H', 290, tableY);
+  ctx.fillText('D', 326, tableY);
+  ctx.fillText('T', 354, tableY);
+  ctx.fillText('I50', 390, tableY);
+
+  ctx.font = '12px Courier New';
+  ctx.fillStyle = '#fff';
+  for (let i = 0; i < Math.min(14, roster.length); i++){
+    const p = roster[i];
+    const gs = p.gameStats || {};
+    const d = (gs.kicks || 0) + (gs.handballs || 0);
+    const y = tableY + 4 + (i + 1) * rowH;
+    ctx.fillText((p.name || '').slice(0, 18), 50, y);
+    ctx.fillText(String(gs.goals || 0), 192, y);
+    ctx.fillText(String(gs.behinds || 0), 220, y);
+    ctx.fillText(String(gs.kicks || 0), 256, y);
+    ctx.fillText(String(gs.handballs || 0), 292, y);
+    ctx.fillText(String(d), 328, y);
+    ctx.fillText(String(gs.tackles || 0), 356, y);
+    ctx.fillText(String(gs.inside50s || 0), 392, y);
+  }
+
+  if (showBestOnGround){
+    const bog = getBestOnGround();
+    if (bog){
+      const cardW = 200, cardH = 90;
+      const cardX = 580, cardY = 235;
+      const grad = ctx.createLinearGradient(cardX, cardY, cardX + cardW, cardY + cardH);
+      grad.addColorStop(0, 'rgba(255,215,0,0.4)');
+      grad.addColorStop(0.5, 'rgba(255,215,0,0.15)');
+      grad.addColorStop(1, 'rgba(255,215,0,0.35)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(cardX, cardY, cardW, cardH);
+      ctx.strokeStyle = '#ffd700';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(cardX, cardY, cardW, cardH);
+      ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(cardX + 2, cardY + 2, cardW - 4, cardH - 4);
+      drawPlayerPortrait(bog, cardX + 10, cardY + 20, 50);
+      ctx.textAlign = 'left';
+      ctx.font = 'bold 12px Courier New';
+      ctx.fillStyle = '#ffd700';
+      ctx.fillText('BEST ON GROUND', cardX + 68, cardY + 22);
+      const gs = bog.gameStats || {};
+      const d = (gs.kicks || 0) + (gs.handballs || 0);
+      ctx.font = 'bold 14px Courier New';
+      ctx.fillStyle = '#fff';
+      ctx.fillText((bog.name || '').slice(0, 16), cardX + 68, cardY + 44);
+      ctx.font = '11px Courier New';
+      ctx.fillStyle = 'rgba(255,255,255,0.9)';
+      ctx.fillText(`${gs.goals||0}G ${gs.behinds||0}B  ${d}D  ${gs.tackles||0}T  ${gs.inside50s||0}I50`, cardX + 68, cardY + 62);
+    }
+  }
+}
+
+function drawStatsInGameOverlay(){
+  ctx.save();
+  ctx.scale(2, 2);
+  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  ctx.fillRect(0, 0, 800, 600);
+  drawStatsOverlayContent(false);
+  ctx.font = 'bold 12px Courier New';
+  ctx.fillStyle = 'rgba(255,255,255,0.8)';
+  ctx.textAlign = 'center';
+  ctx.fillText('ESC back to pause', 400, 578);
   ctx.restore();
 }
 
@@ -4399,6 +4767,7 @@ function attemptTackle(attacker, victim, isPlayerAction){
     victim.hasBall = false;
     victim.noPickupFrames = NO_RECLAIM_FRAMES;
     giveBallTo(attacker);
+    if (attacker.gameStats) attacker.gameStats.tackles++;
     if (attacker.team === 'sloths') switchControlTo(attacker);
     showMessage('TACKLED!');
     playSound('tackle');
@@ -4425,6 +4794,7 @@ function attemptTackle(attacker, victim, isPlayerAction){
     victim.noPickupFrames = NO_RECLAIM_FRAMES;
     giveBallTo(attacker);
     attacker.tackleCooldown = AI_TACKLE_COOLDOWN;
+    if (attacker.gameStats) attacker.gameStats.tackles++;
     showMessage('TACKLED!');
     playSound('tackle');
     // v131: If tackle happens during goalkick, cancel the event and restore normal time/zoom
@@ -4446,6 +4816,7 @@ function attemptTackle(attacker, victim, isPlayerAction){
     victim.noPickupFrames = NO_RECLAIM_FRAMES;
     giveBallTo(attacker);
     attacker.tackleCooldown = AI_TACKLE_COOLDOWN;
+    if (attacker.gameStats) attacker.gameStats.tackles++;
     showMessage('TACKLED!');
     playSound('tackle');
     // v131: If tackle happens during goalkick, cancel the event and restore normal time/zoom
@@ -4476,6 +4847,11 @@ function resolveCatch(possessor){
   const kickDist = Math.hypot(ball.x - ball.kickStartX, ball.y - ball.kickStartY);
   const isKick = (ball.kickType === 'pass' || ball.kickType === 'chip' || ball.kickType === 'punt');
   const isMark = isKick && kickDist >= MARK_MIN_KICK_DIST;
+
+  // v154: Inside 50 — kick landed in attacking 50 for the kicking team
+  if (ball.lastKickedByPlayer && ball.lastKickedByPlayer.gameStats && (ball.kickType === 'pass' || ball.kickType === 'chip' || ball.kickType === 'punt' || ball.kickType === 'goalkick')){
+    if (isInside50ForTeam(ball.x, ball.lastKickedBy)) ball.lastKickedByPlayer.gameStats.inside50s++;
+  }
 
   giveBallTo(possessor);
   possessor.noPickupFrames = NO_RECLAIM_FRAMES;
@@ -4769,6 +5145,8 @@ function performChargedKick(){
   ball.free = true;
   ball.kickType = kickType;
   ball.lastKickedBy = player.team;
+  ball.lastKickedByPlayer = player;
+  if (player.gameStats) player.gameStats.kicks++;
   ball.kickStartX = ball.x;
   ball.kickStartY = ball.y;
   // v126: Do NOT clear kick-in grace when possession changes
@@ -4956,6 +5334,7 @@ function executeGoalKick(){
   const player = goalKickShooter || getControlledPlayer();
   if (!player || !player.hasBall) { gameState='playing'; return; }
 
+  ball.lastKickedByPlayer = player; // v154: for goal/behind attribution
   // Turn the meter result into an actual kick we can see.
   const team = player.team;
   const atk = getAttackDir(team);
@@ -4978,19 +5357,14 @@ function executeGoalKick(){
 
   let finalTargetX = targetX;
   if (ball.goalkickPlannedResult === 'goal'){
-    // v148: Clamp targetX to oval bounds to prevent "on the full" when kicking from near boundary.
-    // Goal line is at oval edge, so clamp to just inside goal line to ensure flight crosses it.
-    const goalLineX = (atk === -1) ? LEFT_GOAL_X : RIGHT_GOAL_X;
-    const ovalMinX = OVAL_CX - OVAL_A;
-    const ovalMaxX = OVAL_CX + OVAL_A;
-    // Clamp to oval, but ensure it's at least slightly beyond goal line so flight crosses it
-    finalTargetX = (atk === -1)
-      ? Math.max(goalLineX - 10, Math.min(ovalMinX + 5, targetX))
-      : Math.min(goalLineX + 10, Math.max(ovalMaxX - 5, targetX));
-    
+    // v153: For goal, let ball fly well past the goal line (targetX is 70 past) so it visibly
+    // travels into the crowd during score pause; don't clamp to oval.
+    finalTargetX = targetX;
     // Goal: keep inside goal posts
     yAim = clamp(yAim, GOAL_Y_TOP + 8, GOAL_Y_BOT - 8);
   } else if (ball.goalkickPlannedResult === 'behind'){
+    // v153: For behind, same — let ball fly past goal line into crowd.
+    finalTargetX = targetX;
     // Behind: keep between behind posts but *outside* goal area
     yAim = clamp(yAim, BEHIND_Y_TOP + 8, BEHIND_Y_BOT - 8);
     if (yAim > GOAL_Y_TOP && yAim < GOAL_Y_BOT){
@@ -5814,6 +6188,8 @@ function updatePlaying(){
         ball.kickType = 'handball';
         playSound('handball');
         ball.lastKickedBy = player.team;
+        ball.lastKickedByPlayer = player;
+        if (player.gameStats) player.gameStats.handballs++;
         ball.kickStartX = ball.x;
         ball.kickStartY = ball.y;
         // v126: Do NOT clear kick-in grace when possession changes
@@ -5955,6 +6331,8 @@ function updatePlaying(){
         ball.kickType = 'handball';
         playSound('handball');
         ball.lastKickedBy = 'dropbears';
+        ball.lastKickedByPlayer = bearCarrier;
+        if (bearCarrier.gameStats) bearCarrier.gameStats.handballs++;
         ball.kickStartX = ball.x;
         ball.kickStartY = ball.y;
 
@@ -5976,6 +6354,8 @@ function updatePlaying(){
         ball.free = true;
         ball.kickType = 'pass';
         ball.lastKickedBy = 'dropbears';
+        ball.lastKickedByPlayer = bearCarrier;
+        if (bearCarrier.gameStats) bearCarrier.gameStats.kicks++;
         ball.kickStartX = ball.x;
         ball.kickStartY = ball.y;
         ball.intendedTarget = passTarget;
@@ -6008,6 +6388,8 @@ function updatePlaying(){
       bearCarrier.hasBall = false;
       ball.free = true;
       ball.lastKickedBy = 'dropbears';
+      ball.lastKickedByPlayer = bearCarrier;
+      if (bearCarrier.gameStats) bearCarrier.gameStats.kicks++;
       ball.kickType = 'punt';
       // v41: reset interceptor lock for legacy punt flights
       ball.airChaseId = airChaseIdCounter++;
@@ -6033,6 +6415,8 @@ function updatePlaying(){
       bearCarrier.hasBall = false;
       ball.free = true;
       ball.lastKickedBy = 'dropbears';
+      ball.lastKickedByPlayer = bearCarrier;
+      if (bearCarrier.gameStats) bearCarrier.gameStats.kicks++;
       ball.kickType = 'punt';
       // v41: reset interceptor lock for legacy punt flights
       ball.airChaseId = airChaseIdCounter++;
@@ -6232,6 +6616,7 @@ function resetAfterScore(type, teamToStart, scoringEndSide=null, scoredY=null){
   ball.vx = 0; ball.vy = 0; ball.height = 0;
   ball.free = false;
   ball.lastKickedBy = null;
+  ball.lastKickedByPlayer = null;
   ball.kickType = null;
   ball.goalkickPlannedResult = null;
   ball.flightFramesLeft = 0;
@@ -6380,6 +6765,12 @@ function gameLoop(ts){
   if (uiScreen === UI_SCREEN.PAUSE_MENU){
     drawGameFrame();
     drawPauseMenuOverlay();
+    requestAnimationFrame(gameLoop);
+    return;
+  }
+  if (uiScreen === UI_SCREEN.STATS_IN_GAME){
+    drawGameFrame();
+    drawStatsInGameOverlay();
     requestAnimationFrame(gameLoop);
     return;
   }
