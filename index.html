@@ -1134,11 +1134,12 @@ const GROUND_HEIGHT_DECAY_MULT = 7;
 // After any kick/handball lands, briefly lock pickups so players don't "vacuum" it instantly.
 const GATHER_LOCK_FRAMES = 10;
 
-// Posts
+// Posts (v159: goal opening = space between white post inner edges; post center ± GOAL_POST_GAP/2, post size 14)
 const GOAL_POST_GAP = 120;
 const BEHIND_GAP = 330;
-const GOAL_Y_TOP = 310;
-const GOAL_Y_BOT = 400;
+const GOAL_POST_SIZE = 14;
+const GOAL_Y_TOP = (OVAL_CY - GOAL_POST_GAP/2) + GOAL_POST_SIZE/2;   // 302 — inner edge of top post
+const GOAL_Y_BOT = (OVAL_CY + GOAL_POST_GAP/2) - GOAL_POST_SIZE/2;   // 408 — inner edge of bottom post
 const BEHIND_Y_TOP = 250;
 const BEHIND_Y_BOT = 460;
 
@@ -1218,6 +1219,7 @@ const UI_SCREEN = {
   STATS_ROSTER: 'stats_roster',
   PAUSE_MENU: 'pause_menu',
   STATS_IN_GAME: 'stats_in_game', // v154: in-game stats (worm + team list)
+  GAME_LENGTH_MENU: 'game_length_menu', // v159: 0.5x / 1x / 2x
   SETTINGS_MENU: 'settings_menu',
   AUDIO_MENU: 'audio_menu',
   FORMATION_MENU: 'formation_menu',
@@ -1245,12 +1247,14 @@ const FORMATION_LABEL = {
 let slothsFormation = FORMATION.BALANCED;
 let dropbearsFormation = FORMATION.BALANCED;
 
-let pauseMenuIndex = 0;      // 0=RESUME, 1=CHANGE TACTICS, 2=STATS, 3=SETTINGS
+let pauseMenuIndex = 0;      // v159: 0=RESUME, 1=CHANGE TACTICS, 2=STATS, 3=GAME LENGTH, 4=SETTINGS
 let statsMenuTeamIndex = 0;   // v154: 0=Sloths, 1=Dropbears (in STATS_IN_GAME)
 let statsTableScroll = 0;    // v158: scroll index for stats list (0..max, 14 visible)
 let fulltimeSubScreen = 'choice'; // v156: 'choice' | 'stats' (REPLAY removed)
 let fulltimeMenuIndex = 0;   // v156: 0=STATS, 1=MAIN MENU
 let formationMenuIndex = 0;  // cursor in formation menu (0..2)
+let gameLengthMenuIndex = 1; // v159: 0=0.5x, 1=1x, 2=2x (default 1x)
+let gameLengthMult = 1.0;    // v159: quarter clock speed (0.5, 1, 2)
 let settingsMenuIndex = 0;   // currently only 0=AUDIO
 let audioMenuIndex = 0;      // 0=MUSIC, 1=SFX
 
@@ -1488,10 +1492,10 @@ window.addEventListener('keydown', e => {
 
     if (uiScreen === UI_SCREEN.PAUSE_MENU){
       if (code === 'ArrowUp'){
-        pauseMenuIndex = (pauseMenuIndex + 3) % 4;
+        pauseMenuIndex = (pauseMenuIndex + 4) % 5;
         playSound('chip');
       } else if (code === 'ArrowDown'){
-        pauseMenuIndex = (pauseMenuIndex + 1) % 4;
+        pauseMenuIndex = (pauseMenuIndex + 1) % 5;
         playSound('chip');
       } else if (code === 'Enter'){
         if (pauseMenuIndex === 0){
@@ -1508,6 +1512,10 @@ window.addEventListener('keydown', e => {
           statsMenuTeamIndex = 0;
           statsTableScroll = 0;
           playSound('chip');
+        } else if (pauseMenuIndex === 3) {
+          uiScreen = UI_SCREEN.GAME_LENGTH_MENU;
+          gameLengthMenuIndex = (gameLengthMult === 0.5) ? 0 : (gameLengthMult === 2) ? 2 : 1;
+          playSound('chip');
         } else {
           uiScreen = UI_SCREEN.SETTINGS_MENU;
           settingsMenuIndex = 0;
@@ -1518,6 +1526,23 @@ window.addEventListener('keydown', e => {
         isPaused = false;
         playSound('chip');
         resumeBGM();
+      }
+      return;
+    }
+
+    if (uiScreen === UI_SCREEN.GAME_LENGTH_MENU){
+      if (code === 'ArrowUp' || code === 'ArrowLeft'){
+        gameLengthMenuIndex = (gameLengthMenuIndex + 2) % 3;
+        gameLengthMult = gameLengthMenuIndex === 0 ? 0.5 : gameLengthMenuIndex === 1 ? 1 : 2;
+        playSound('chip');
+      } else if (code === 'ArrowDown' || code === 'ArrowRight'){
+        gameLengthMenuIndex = (gameLengthMenuIndex + 1) % 3;
+        gameLengthMult = gameLengthMenuIndex === 0 ? 0.5 : gameLengthMenuIndex === 1 ? 1 : 2;
+        playSound('chip');
+      } else if (code === 'Enter' || code === 'Escape'){
+        uiScreen = UI_SCREEN.PAUSE_MENU;
+        pauseMenuIndex = 3;
+        playSound('chip');
       }
       return;
     }
@@ -1561,7 +1586,7 @@ window.addEventListener('keydown', e => {
         playSound('chip');
       } else if (code === 'Escape'){
         uiScreen = UI_SCREEN.PAUSE_MENU;
-        pauseMenuIndex = 3; // keep cursor on SETTINGS
+        pauseMenuIndex = 4; // keep cursor on SETTINGS
         playSound('chip');
       }
       return;
@@ -4025,7 +4050,7 @@ function drawPauseMenuOverlay(){
   // v120: Scale overlay 2x to match doubled canvas resolution
   ctx.save();
   ctx.scale(2, 2);
-  drawInGameMenuOverlay('PAUSED', ['RESUME', 'CHANGE TACTICS', 'STATS', 'SETTINGS'], pauseMenuIndex);
+  drawInGameMenuOverlay('PAUSED', ['RESUME', 'CHANGE TACTICS', 'STATS', 'GAME LENGTH', 'SETTINGS'], pauseMenuIndex);
   ctx.restore();
 }
 
@@ -4235,6 +4260,13 @@ function drawFormationMenuOverlay(){
     FORMATION_LABEL[FORMATION.DEFENSIVE]
   ];
   drawInGameMenuOverlay('CHANGE TACTICS', opts, formationMenuIndex, formationListIndex(slothsFormation));
+  ctx.restore();
+}
+
+function drawGameLengthMenuOverlay(){
+  ctx.save();
+  ctx.scale(2, 2);
+  drawInGameMenuOverlay('GAME LENGTH', ['0.5x (longer quarters)', '1x (default)', '2x (shorter quarters)'], gameLengthMenuIndex);
   ctx.restore();
 }
 
@@ -6074,7 +6106,7 @@ function update(){
   // v69: Game clock (20:00) with stoppage time.
   // v156: When time hits 0, play siren but let ball play out; end quarter only when ball is dead (possessed or out).
   if (gameState === 'playing'){
-    quarterTime = Math.max(0, quarterTime - (GAME_CLOCK_SPEED_MULT / 60));
+    quarterTime = Math.max(0, quarterTime - (GAME_CLOCK_SPEED_MULT / 60) * gameLengthMult);
     if (quarterTime <= 0){
       if (!quarterExpired){
         quarterExpired = true;
@@ -6768,6 +6800,12 @@ function gameLoop(ts){
   if (uiScreen === UI_SCREEN.STATS_IN_GAME){
     drawGameFrame();
     drawStatsInGameOverlay();
+    requestAnimationFrame(gameLoop);
+    return;
+  }
+  if (uiScreen === UI_SCREEN.GAME_LENGTH_MENU){
+    drawGameFrame();
+    drawGameLengthMenuOverlay();
     requestAnimationFrame(gameLoop);
     return;
   }
