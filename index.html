@@ -52,6 +52,7 @@
   </div>
 
 <script>
+// v160: FIX stats tracking across quarters (do not rebuild players each quarter)
 // Debug logging system
 const debugLogs = [];
 function debugLog(location, message, data, hypothesisId) {
@@ -1408,7 +1409,7 @@ function startNewGameFromMenu(){
   umpireSoundPlayed = false;
   messageTimer = 0;
 
-  resetPositionsStart();
+  resetPositionsStart(true);
   scoreWorm = [{ t: 0, diff: 0 }];
   pendingWormPoint = null;
   displayScore.sloths.g = score.sloths.g;
@@ -2148,7 +2149,7 @@ function startNextQuarter(){
   quarterExpired = false;
   // v70: swap ends each quarter
   slothsAttackDir *= -1;
-  resetPositionsStart();
+  resetPositionsStart(false);
   gameState = 'playing';
   playSound('quarterstart');
   showMessage(`QUARTER ${quarter}`);
@@ -6700,17 +6701,64 @@ function resetAfterScore(type, teamToStart, scoringEndSide=null, scoredY=null){
     cameraX = Math.max(0, Math.min(FIELD_WIDTH - 800, starter.x - 400));
     cameraY = starter.y - 300;
   } else {
-    resetPositionsStart();
+    resetPositionsStart(false);
   }
 }
 
-function resetPositionsStart(){
-  rebuildPlayers();
+function resetPositionsStart(rebuild=false){
+  // v160: Rebuilding players resets per-match gameStats, so only rebuild on NEW MATCH.
+  if (rebuild){
+    rebuildPlayers();
+  }
+
+  // Snap everyone back to home spots for a clean centre bounce (WITHOUT wiping gameStats).
+  allPlayers.forEach(p => {
+    p.x = p.homeX; p.y = p.homeY;
+    p.roamX = p.homeX; p.roamY = p.homeY;
+    p.roamTimer = 0;
+
+    p.hasBall = false;
+    p.possessFrames = 0;
+    p.pressureFrames = 0;
+    p.tackleCooldown = 0;
+    p.noPickupFrames = 0;
+
+    p.airChaseId = 0;
+    p.airOffX = 0;
+    p.airOffY = 0;
+    p.airWanderTimer = 0;
+
+    p.jumpFrames = 0;
+    p.jumpT = 0;
+
+    p.aimX = getAttackDir(p.team);
+    p.aimY = 0;
+
+    p.controlled = false;
+  });
+
+  // Reset ball to a neutral "attached" state.
+  ball.vx = 0; ball.vy = 0;
+  ball.height = 0;
+  ball.prevHeight = 0;
+  ball.free = true;
+  ball.kickType = null;
+  ball.flightFramesLeft = 0;
+  ball.flightTotalFrames = 0;
+  ball.flightMaxHeight = 0;
+  ball.intendedTarget = null;
+  ball.softCatchTarget = null;
+  ball.softCatchFramesLeft = 0;
+  ball.gatherLockFrames = 0;
+  ball.landingMarkerStartHeight = 0;
+
+  // Choose a starter and give them the ball.
   const starter = nearestPlayer('sloths', OVAL_CX, OVAL_CY).best;
   if (starter){
     starter.x = OVAL_CX;
     starter.y = OVAL_CY;
     clampToOval(starter);
+    starter.controlled = true;
     giveBallTo(starter);
     starter.noPickupFrames = START_UNTACKLE_FRAMES;
     kickoffLockFrames = START_UNTACKLE_FRAMES;
@@ -6838,7 +6886,7 @@ function gameLoop(ts){
   requestAnimationFrame(gameLoop);
 }
 
-resetPositionsStart();
+resetPositionsStart(true);
 requestAnimationFrame(gameLoop);
 </script>
 </body>
